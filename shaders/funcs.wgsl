@@ -67,14 +67,16 @@ var<storage, read_write> start_indices: array<u32>;
 
 
 
+const E : f32 = 0.04;
+
 
 // Poly6 kernel (scalar)
 fn poly6_kernel(h: f32, r2: f32) -> f32 {
     let h2 = h * h;
     if r2 > h2 { return 0.0; }
-    let diff = h2 - r2;
-    let poly6_norm = 4.0 / (PI * pow(h, 8.0));
-    //let poly6_norm = u.poly6_kernel_volume;
+    let diff = h2 - max(r2, E*E);
+    //let poly6_norm = 4.0 / (PI * pow(h, 8.0));
+    let poly6_norm = u.poly6_kernel_volume;
     return poly6_norm * diff * diff * diff;
 }
 
@@ -83,7 +85,8 @@ fn poly6_kernel_gradient(h: f32, r: vec2<f32>) -> vec2<f32> {
     if r_len >= h { return vec2<f32>(0.0, 0.0); }
 
     let diff2 = h*h - r_len*r_len;
-    let constant = -24.0 / (PI * pow(h, 8.0)); // scale up for visibility
+    //let constant = -24.0 / (PI * pow(h, 8.0)); // scale up for visibility
+    let constant = u.poly6_kernel_derivative;
 
     let safe_r_len = max(r_len, 1e-6);
     return constant * diff2 * diff2 * (r / safe_r_len) * safe_r_len;
@@ -96,8 +99,9 @@ fn poly6_kernel_laplacian(h: f32, r: f32) -> f32 {
     if r > h { return 0.0; }
 
     let h2 = h * h;
-    let r2 = r * r;
-    let constant = 8.0 / (PI * pow(h, 8.0));
+    let r2 = max(r * r, E*E);
+    //let constant = 8.0 / (PI * pow(h, 8.0));
+    let constant = u.poly6_kernel_laplacian;
     return constant * (h2 - r2) * (3.0*h2 - 4.0*r2);
 }
 
@@ -113,12 +117,14 @@ fn spiky_kernel_derivative(h: f32, r: f32) -> f32 {
 }
 
 
-fn viscosity_kernel(h: f32, r: f32) -> f32 {
-    if r <= h {
+fn viscosity_kernel(h: f32, rad: f32) -> f32 {
+    if rad <= h {
         let constant = u.viscosity_kernel;
-        if r == 0.0 {
+        if rad == 0.0 {
             return constant;
         }
+
+        let r = max(rad, E);
 
         return constant * ((-(r*r*r)/(2.0*h*h*h))+((r*r)/(h*h))+(h/(2.0*r))-1.0);
     } else {

@@ -68,7 +68,7 @@ fn calculate_density(
 
     let point = particle.predicted_position;
     let density = max(calculate_density_at_point(point), 0.1);
-    particle.density = density;
+    particle.density = max(density, 0.001);
 
     in_particles[id] = particle;
 }
@@ -114,11 +114,13 @@ fn move_particle(
         particle.velocity = vec2(0.0, 0.0);
     }
 
-    let max_speed = 500.0;
+    let max_speed = 50.0;
     let speed = length(particle.velocity);
     if (speed > max_speed) {
         particle.velocity = (particle.velocity / speed) * max_speed;
     }
+
+    particle.velocity *= 1.0 - 0.05 * u.delta;
 
 
     particle.position += particle.velocity * u.delta;

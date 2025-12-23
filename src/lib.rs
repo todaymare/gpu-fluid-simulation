@@ -8,6 +8,7 @@ mod input;
 
 use std::{fmt::Write, time::Instant};
 
+use egui::Button;
 use glam::{UVec2, Vec2, Vec4};
 use rand::Rng;
 use winit::{application::ApplicationHandler, dpi::LogicalSize, event::WindowEvent, event_loop::{ActiveEventLoop, ControlFlow, EventLoop}, window::{Window, WindowId}};
@@ -19,7 +20,6 @@ use crate::{input::InputManager, renderer::{Renderer, OBJECT_RENDER_TEXTURE_DIMS
 pub struct Engine {
     renderer: Renderer,
     input: InputManager,
-    lua: mlua::Lua,
 
     last_frame: Instant,
     time_since_simulation: f32,
@@ -30,9 +30,6 @@ pub struct Engine {
 
     pipe_pos: Vec2,
     pipe_gap: f32,
-
-    lua_code: String,
-    lua_console: String,
 }
 
 
@@ -103,43 +100,9 @@ impl Engine {
 
 
         self.renderer.render(encoder, |ctx| {
-            egui::Window::new("Console")
+            egui::Window::new("Scene")
             .show(ctx, |ui| {
-                // Use a ScrollArea if the code is long
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    ui.group(|ui| {
-                        ui.add(
-                            egui::TextEdit::multiline(&mut self.lua_code)
-                                .code_editor()  // fixed-width font
-                                .desired_rows(10)
-                                //.lock_focus(true) // optional: read-only style
-                                .interactive(true)
-                        );
 
-                        if ui.button("Execute").clicked() {
-                            let chunk = self.lua.load(&self.lua_code);
-                            let result = match chunk.call::<mlua::Value>(()) {
-                                Ok(v) => v,
-                                Err(e) => {
-                                    self.lua_console.push('\n');
-                                    self.lua_console.push_str(&e.to_string());
-                                    return;
-                                },
-                            };
-
-
-                            writeln!(self.lua_console, "Executed successfully: {result:?}");
-                        }
-
-
-                        ui.add(
-                            egui::TextEdit::multiline(&mut self.lua_console)
-                                .code_editor()  // fixed-width font
-                                .desired_rows(10)
-                                .interactive(false)
-                        );
-                    });
-                });
             });
 
         });
@@ -160,7 +123,7 @@ impl ApplicationHandler for EngineLauncher {
         let window = event_loop.create_window(Window::default_attributes().with_inner_size(LogicalSize::new(960, 540))).unwrap();
 
         let sim_settings = SimulationSettings {
-            particle_count: 10_000,
+            particle_count: 100_000,
             particle_spacing: 0.1,
             smoothing_radius: 0.3,
             size: Vec2::new(53.0, 30.0),
@@ -171,7 +134,7 @@ impl ApplicationHandler for EngineLauncher {
         let mut renderer = pollster::block_on(Renderer::new(window, sim_settings));
         renderer.tick_settings.delta = 1.0 / 480.0;
         renderer.tick_settings.pressure_constant = 500.0;
-        renderer.tick_settings.rest_density = 20.0;
+        renderer.tick_settings.rest_density = 0.0;
         renderer.tick_settings.damping_factor = 0.7;
         renderer.tick_settings.viscosity_coefficient = 250.0;
 

@@ -696,7 +696,6 @@ impl Renderer {
                         ui.label("surface tension treshold");
                         ui.add(
                             egui::widgets::DragValue::new(&mut self.tick_settings.surface_tension_treshold)
-                                .range(0.0..=f32::MAX)
                                 .speed(0.025),
                         );
                     });
@@ -704,7 +703,6 @@ impl Renderer {
                         ui.label("surface tension coefficient");
                         ui.add(
                             egui::widgets::DragValue::new(&mut self.tick_settings.surface_tension_coefficient)
-                                .range(0.0..=f32::MAX)
                                 .speed(0.025),
                         );
                     });

@@ -63,7 +63,7 @@ fn fs_main(input: Fragment) -> @location(0) vec4<f32> {
                 let offset = p - point;
                 let r2 = dot(offset, offset);
 
-                let contrib = exp(-r2 / (0.01));
+                let contrib = exp(-r2 / (0.06));
                 density += contrib;
                 velocity_factor += contrib * length(vel); // weighted by proximity
                 // func end

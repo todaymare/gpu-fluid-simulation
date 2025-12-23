@@ -473,7 +473,7 @@ impl FluidSimulation {
             surface_tension_treshold: settings.surface_tension_treshold,
             surface_tension_coefficient: settings.surface_tension_coefficient,
             poly6_kernel_volume: 4.0 / (PI * self.settings.smoothing_radius.powi(8)),
-            poly6_kernel_derivative: 24.0 / (PI * self.settings.smoothing_radius.powi(8)),   // used in gradient
+            poly6_kernel_derivative: -24.0 / (PI * self.settings.smoothing_radius.powi(8)),   // used in gradient
             poly6_kernel_laplacian: 8.0 / (PI * self.settings.smoothing_radius.powi(8)),
             spiky_kernel_derivative: 12.0 / (self.settings.smoothing_radius.powi(4) * PI),
             viscosity_kernel: 15.0 / (2.0 * PI * self.settings.smoothing_radius.powi(3)),
