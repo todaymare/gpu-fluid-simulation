@@ -24,7 +24,5 @@ image = "*"
 sti = "*"
 
 
-# engine stuff
-rapier2d = { version = "*", features = ["parallel", "simd-nightly"] }
-mlua = { version = "*", features = ["luau", "vendored"] }
+
 

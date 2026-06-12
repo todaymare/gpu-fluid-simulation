@@ -1032,19 +1032,42 @@ fn generate_smooth_gradient_field(img: Image) -> Vec<Vec2> {
         return gradient_field;
     }
 
+    let smooth_dist: Vec<Vec<f32>> = (0..height).map(|y| {
+        (0..width).map(|x| {
+            let mut sum = 0.0;
+            let mut weight_sum = 0.0;
+            for dy in -2i32..=2 {
+                for dx in -2i32..=2 {
+                    let nx = x as i32 + dx;
+                    let ny = y as i32 + dy;
+                    if nx >= 0 && nx < width as i32 && ny >= 0 && ny < height as i32 {
+                        let w = (-((dx*dx + dy*dy) as f32) * 0.5).exp();
+                        sum += w * dist[ny as usize][nx as usize].sqrt();
+                        weight_sum += w;
+                    }
+                }
+            }
+            sum / weight_sum
+        }).collect()
+    }).collect();
+
     for y in 0..height {
         for x in 0..width {
-            let (source_x, source_y) = nearest[y][x];
+            let xm = if x > 0 { x - 1 } else { x };
+            let xp = if x + 1 < width { x + 1 } else { x };
+            let ym = if y > 0 { y - 1 } else { y };
+            let yp = if y + 1 < height { y + 1 } else { y };
 
-            // 1. REVERSE SUBTRACTION: Vector from source TO pixel (points away)
-            let dir_x = x as f32 - source_x as f32;
-            let dir_y = y as f32 - source_y as f32;
+            let sdf = |xi: usize, yi: usize| -> f32 {
+                smooth_dist[yi][xi]
+            };
 
-            // 2. NORMALIZE: Calculate the length and divide by it
-            let length = (dir_x * dir_x + dir_y * dir_y).sqrt();
+            let dx = sdf(xp, y) - sdf(xm, y);
+            let dy = sdf(x, yp) - sdf(x, ym);
+            let length = (dx * dx + dy * dy).sqrt();
 
-            let grad_x = if length > 1e-6 { dir_x } else { 0.0 };
-            let grad_y = if length > 1e-6 { dir_y } else { 0.0 };
+            let grad_x = if length > 1e-6 { dx / length } else { 0.0 };
+            let grad_y = if length > 1e-6 { dy / length } else { 0.0 };
 
             gradient_field[y * width + x] = -Vec2::new(grad_x, grad_y);
         }

@@ -125,19 +125,37 @@ fn move_particle(
 
     particle.position += particle.velocity * u.delta;
 
-    let uv = (particle.predicted_position / u.bounds*1.0) + 0.5;
-    let pos = vec2<u32>(uv * u.texture_size);
-    let force = texture[u32(pos.y * u32(u.texture_size.x) + pos.x)];
+    let uv = (particle.position / u.bounds * 1.0) + 0.5;
+    let pos_f = uv * u.texture_size - vec2<f32>(0.5);
+    let pos = vec2<i32>(floor(pos_f));
+    let fx = pos_f.x - f32(pos.x);
+    let fy = pos_f.y - f32(pos.y);
+
+    let w_x = i32(u.texture_size.x);
+    let w_y = i32(u.texture_size.y);
+    let xc0 = clamp(pos.x, 0, w_x - 1);
+    let yc0 = clamp(pos.y, 0, w_y - 1);
+    let xc1 = clamp(pos.x + 1, 0, w_x - 1);
+    let yc1 = clamp(pos.y + 1, 0, w_y - 1);
+
+    let f00 = texture[u32(yc0) * u32(w_x) + u32(xc0)];
+    let f10 = texture[u32(yc0) * u32(w_x) + u32(xc1)];
+    let f01 = texture[u32(yc1) * u32(w_x) + u32(xc0)];
+    let f11 = texture[u32(yc1) * u32(w_x) + u32(xc1)];
+    let force = mix(mix(f00, f10, fx), mix(f01, f11, fx), fy);
 
     let pixel_to_world = (u.bounds * 2.0) / vec2<f32>(u.texture_size);
-    let force_world = vec2<f32>(force) * pixel_to_world;
+    let force_world = force * pixel_to_world;
 
-    if force.x != 0 || force.y != 0 { 
+    if force.x != 0 || force.y != 0 {
         let n = normalize(force);
         particle.position += force_world;
         let vn = dot(particle.velocity, n);
-        particle.velocity -= (1.0 - u.damping_factor) * vn * n;
-
+        let vt = particle.velocity - vn * n;
+        if vn < 0.0 {
+            particle.velocity -= (1.0 + u.damping_factor) * vn * n;
+        }
+        particle.velocity -= vt * u.damping_factor;
     }
 
 

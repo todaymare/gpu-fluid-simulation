@@ -6,9 +6,7 @@ mod shader;
 mod egui_tools;
 mod input;
 
-use std::{fmt::Write, time::Instant};
-
-use egui::Button;
+use std::time::Instant;
 use glam::{UVec2, Vec2, Vec4};
 use rand::Rng;
 use winit::{application::ApplicationHandler, dpi::LogicalSize, event::WindowEvent, event_loop::{ActiveEventLoop, ControlFlow, EventLoop}, window::{Window, WindowId}};
@@ -138,25 +136,15 @@ impl ApplicationHandler for EngineLauncher {
         renderer.tick_settings.damping_factor = 0.7;
         renderer.tick_settings.viscosity_coefficient = 250.0;
 
-        let lua = mlua::Lua::new();
-        lua.set_compiler(mlua::Compiler::new()
-            .set_debug_level(2)
-            .set_coverage_level(2)
-        );
-
-
         self.engine = Some(Engine {
             renderer,
             input: InputManager::new(),
-            lua,
             last_frame: Instant::now(),
             time_since_simulation: 0.0,
             pos: Vec2::ZERO,
             vel: Vec2::ZERO,
             pipe_pos: Vec2::ZERO,
             pipe_gap: 5.0,
-            lua_code: String::new(),
-            lua_console: String::new(),
         })
     }
 
