@@ -33,7 +33,9 @@ pub struct FluidSimulation {
     calculate_density: ComputePipeline,
     move_particle: ComputePipeline,
     sort_pipeline: ComputePipeline,
-    
+
+    pub show_force_field: bool,
+
 }
 
 
@@ -86,6 +88,11 @@ pub struct SimulationUniform {
     grid_h: u32,
 
     texture_size: Vec2,
+
+    show_force_field: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
 
 }
 
@@ -440,6 +447,8 @@ impl FluidSimulation {
 
             sort_buf_len,
             sort_dispatch: sort_dispatch_count,
+
+            show_force_field: false,
         }
     }
 
@@ -483,6 +492,10 @@ impl FluidSimulation {
             grid_w: grid_w as u32,
             grid_h: grid_h as u32,
             texture_size: self.settings.texture_size.as_vec2(),
+            show_force_field: if self.show_force_field { 1 } else { 0 },
+            _pad0: 0,
+            _pad1: 0,
+            _pad2: 0,
         };
 
         self.simulation_uniform.update(queue, &uniform);

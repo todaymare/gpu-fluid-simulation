@@ -1,10 +1,6 @@
 #include shaders/funcs.wgsl
 
 
-@group(1) @binding(2)
-var<storage> texture : array<vec2<f32>>;
-
-
 @compute @workgroup_size(256)
 fn predict_next_position(
     @builtin(global_invocation_id) id: vec3<u32>,
@@ -138,10 +134,10 @@ fn move_particle(
     let xc1 = clamp(pos.x + 1, 0, w_x - 1);
     let yc1 = clamp(pos.y + 1, 0, w_y - 1);
 
-    let f00 = texture[u32(yc0) * u32(w_x) + u32(xc0)];
-    let f10 = texture[u32(yc0) * u32(w_x) + u32(xc1)];
-    let f01 = texture[u32(yc1) * u32(w_x) + u32(xc0)];
-    let f11 = texture[u32(yc1) * u32(w_x) + u32(xc1)];
+    let f00 = force_field[u32(yc0) * u32(w_x) + u32(xc0)];
+    let f10 = force_field[u32(yc0) * u32(w_x) + u32(xc1)];
+    let f01 = force_field[u32(yc1) * u32(w_x) + u32(xc0)];
+    let f11 = force_field[u32(yc1) * u32(w_x) + u32(xc1)];
     let force = mix(mix(f00, f10, fx), mix(f01, f11, fx), fy);
 
     let pixel_to_world = (u.bounds * 2.0) / vec2<f32>(u.texture_size);

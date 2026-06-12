@@ -48,6 +48,11 @@ struct Uniforms {
 
     texture_size: vec2<f32>,
 
+    show_force_field: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
+
 }
 
 
@@ -64,6 +69,10 @@ var<storage, read_write> in_particles : array<ParticleInstance>;
 
 @group(1) @binding(1)
 var<storage, read_write> start_indices: array<u32>;
+
+
+@group(1) @binding(2)
+var<storage> force_field : array<vec2<f32>>;
 
 
 

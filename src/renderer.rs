@@ -722,6 +722,7 @@ impl Renderer {
                                 .speed(0.025),
                         );
                     });
+                    ui.checkbox(&mut self.simulation.show_force_field, "show force field");
                 });
 
 
@@ -937,119 +938,119 @@ impl<'a> Image<'a> {
 
 
 
+#[inline]
+fn intersection(fa: f32, a: f32, fb: f32, b: f32) -> f32 {
+    let den = 2.0 * (a - b);
+    if den.abs() < 1e-12 { f32::INFINITY } else { (fa + a * a - fb - b * b) / den }
+}
+
+
+
 fn generate_smooth_gradient_field(img: Image) -> Vec<Vec2> {
     let height = img.height as usize;
     let width = img.width as usize;
 
-    // Distance buffer, initialized to a large value
-    let mut dist = vec![vec![f32::MAX; img.width as _]; img.height as _];
-    // Nearest source pixel coords for each pixel
-    let mut nearest = vec![vec![(0usize, 0usize); img.width as _]; img.height as usize];
-
-    // Step 1: Initialization
+    let mut dist = vec![vec![f32::MAX; width]; height];
     let mut has_white = false;
+
     for y in 0..height {
         for x in 0..width {
             if img.get_pixel(x as u32, y as u32) > 128 {
                 dist[y][x] = 0.0;
-                nearest[y][x] = (x, y);
                 has_white = true;
             }
-
         }
     }
 
     if !has_white {
         for y in 0..height {
             for x in 0..width {
-                if y == height-1 || y == 0 || x == width-1 || x == 0 {
+                if y == height - 1 || y == 0 || x == width - 1 || x == 0 {
                     dist[y][x] = 0.0;
-                    nearest[y][x] = (x, y);
                 }
-
-
             }
         }
-
-
     }
 
+    // Exact 2D Euclidean distance transform (Felzenszwalb & Huttenlocher, 2004).
+    // Two passes of a 1D lower-envelope-of-parabolas, one per axis. Output is
+    // a true Euclidean SDF (squared distance to nearest source pixel), exact
+    // for every pixel -- no quantization, no chamfer approximation.
+    //
+    // 1D transform: for input f[i], compute d[x] = min_i (f[i] + (x-i)^2).
+    // Maintains a lower envelope of parabolas in v[] with intersection points
+    // in z[]. Standard linear-time algorithm.
 
-    // Helper to compute squared Euclidean distance
-    let squared_dist = |x1, y1, x2, y2| -> f32 {
-        let dx = x1 as f32 - x2 as f32;
-        let dy = y1 as f32 - y2 as f32;
-        dx*dx + dy*dy
-    };
+    // First pass: along x, dist[y] -> dt[y] (still squared distances).
+    let mut dt = vec![vec![0.0f32; width]; height];
+    let mut v = vec![0usize; width];
+    let mut z = vec![0.0f32; width + 1];
 
-    // Step 2: Forward pass
     for y in 0..height {
+        let f = &dist[y];
+        let mut k = 0usize;
+        v[0] = 0;
+        z[0] = f32::NEG_INFINITY;
+        z[1] = f32::INFINITY;
+        for q in 1..width {
+            // Intersection s of parabola q with parabola v[k]:
+            //   f[q] + (s-q)^2 = f[v[k]] + (s - v[k])^2
+            //   s = (f[q] + q^2 - f[v[k]] - v[k]^2) / (2*(q - v[k]))
+            let mut s = intersection(f[q], q as f32, f[v[k]], v[k] as f32);
+            while k > 0 && s <= z[k] {
+                k -= 1;
+                s = intersection(f[q], q as f32, f[v[k]], v[k] as f32);
+            }
+            k += 1;
+            v[k] = q;
+            z[k] = s;
+            z[k + 1] = f32::INFINITY;
+        }
+
+        let mut k = 0usize;
         for x in 0..width {
-            // Check neighbors: left, top-left, top, top-right
-            for &(nx, ny) in &[
-                (x.wrapping_sub(1), y), 
-                (x.wrapping_sub(1), y.wrapping_sub(1)), 
-                (x, y.wrapping_sub(1)), 
-                (x + 1, y.wrapping_sub(1))
-            ] {
-                if nx < width && ny < height {
-                    let candidate = nearest[ny][nx];
-                    let candidate_dist = squared_dist(x, y, candidate.0, candidate.1);
-                    if candidate_dist < dist[y][x] {
-                        dist[y][x] = candidate_dist;
-                        nearest[y][x] = candidate;
-                    }
-                }
+            let xf = x as f32;
+            while z[k + 1] < xf {
+                k += 1;
             }
+            let vk = v[k] as f32;
+            dt[y][x] = f[v[k]] + (xf - vk) * (xf - vk);
         }
     }
 
-    // Step 3: Backward pass
-    for y in (0..height).rev() {
-        for x in (0..width).rev() {
-            // Check neighbors: right, bottom-right, bottom, bottom-left
-            for &(nx, ny) in &[
-                (x + 1, y), 
-                (x + 1, y + 1), 
-                (x, y + 1), 
-                (x.wrapping_sub(1), y + 1)
-            ] {
-                if nx < width && ny < height {
-                    let candidate = nearest[ny][nx];
-                    let candidate_dist = squared_dist(x, y, candidate.0, candidate.1);
-                    if candidate_dist < dist[y][x] {
-                        dist[y][x] = candidate_dist;
-                        nearest[y][x] = candidate;
-                    }
-                }
+    // Second pass: along y. After this, dist holds the true Euclidean distance.
+    for x in 0..width {
+        let mut k = 0usize;
+        v[0] = 0;
+        z[0] = f32::NEG_INFINITY;
+        z[1] = f32::INFINITY;
+        for q in 1..height {
+            let mut s = intersection(dt[q][x], q as f32, dt[v[k]][x], v[k] as f32);
+            while k > 0 && s <= z[k] {
+                k -= 1;
+                s = intersection(dt[q][x], q as f32, dt[v[k]][x], v[k] as f32);
             }
+            k += 1;
+            v[k] = q;
+            z[k] = s;
+            z[k + 1] = f32::INFINITY;
+        }
+
+        let mut k = 0usize;
+        for y in 0..height {
+            let yf = y as f32;
+            while z[k + 1] < yf {
+                k += 1;
+            }
+            let vk = v[k] as f32;
+            dist[y][x] = (dt[v[k]][x] + (yf - vk) * (yf - vk)).sqrt();
         }
     }
 
-    // Create RGB image for gradient visualization
     let mut gradient_field = vec![Vec2::ZERO; width * height];
     if !has_white {
         return gradient_field;
     }
-
-    let smooth_dist: Vec<Vec<f32>> = (0..height).map(|y| {
-        (0..width).map(|x| {
-            let mut sum = 0.0;
-            let mut weight_sum = 0.0;
-            for dy in -2i32..=2 {
-                for dx in -2i32..=2 {
-                    let nx = x as i32 + dx;
-                    let ny = y as i32 + dy;
-                    if nx >= 0 && nx < width as i32 && ny >= 0 && ny < height as i32 {
-                        let w = (-((dx*dx + dy*dy) as f32) * 0.5).exp();
-                        sum += w * dist[ny as usize][nx as usize].sqrt();
-                        weight_sum += w;
-                    }
-                }
-            }
-            sum / weight_sum
-        }).collect()
-    }).collect();
 
     for y in 0..height {
         for x in 0..width {
@@ -1059,7 +1060,7 @@ fn generate_smooth_gradient_field(img: Image) -> Vec<Vec2> {
             let yp = if y + 1 < height { y + 1 } else { y };
 
             let sdf = |xi: usize, yi: usize| -> f32 {
-                smooth_dist[yi][xi]
+                dist[yi][xi]
             };
 
             let dx = sdf(xp, y) - sdf(xm, y);

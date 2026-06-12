@@ -101,6 +101,32 @@ fn fs_main(input: Fragment) -> @location(0) vec4<f32> {
     if density > 50.0 {
         return vec4<f32>(0.0, 0.0, 1.0, 1.0);
     }
+
+    if u.show_force_field != 0u {
+        let uv = (world_pos / u.bounds) + vec2<f32>(0.5);
+        let pos_f = uv * u.texture_size - vec2<f32>(0.5);
+        let pos = vec2<i32>(floor(pos_f));
+        let fx = pos_f.x - f32(pos.x);
+        let fy = pos_f.y - f32(pos.y);
+
+        let w_x = i32(u.texture_size.x);
+        let w_y = i32(u.texture_size.y);
+        let xc0 = clamp(pos.x, 0, w_x - 1);
+        let yc0 = clamp(pos.y, 0, w_y - 1);
+        let xc1 = clamp(pos.x + 1, 0, w_x - 1);
+        let yc1 = clamp(pos.y + 1, 0, w_y - 1);
+
+        let f00 = force_field[u32(yc0) * u32(w_x) + u32(xc0)];
+        let f10 = force_field[u32(yc0) * u32(w_x) + u32(xc1)];
+        let f01 = force_field[u32(yc1) * u32(w_x) + u32(xc0)];
+        let f11 = force_field[u32(yc1) * u32(w_x) + u32(xc1)];
+        let grad = mix(mix(f00, f10, fx), mix(f01, f11, fx), fy);
+
+        // Encode [-1, 1] -> [0, 1] per channel. R = x, G = y, B = 0.
+        let visual = vec3<f32>(grad.x * 0.5 + 0.5, grad.y * 0.5 + 0.5, 0.0);
+        return vec4<f32>(visual, 1.0);
+    }
+
     return vec4<f32>(final_color, alpha);
 
 }
