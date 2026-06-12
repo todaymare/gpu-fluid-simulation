@@ -105,6 +105,11 @@ impl Engine {
 
         });
 
+        if self.objects.load_image_pending {
+            self.objects.load_image_pending = false;
+            self.renderer.load_image(&mut self.objects);
+        }
+
         self.renderer.window.request_redraw();
     }
 }

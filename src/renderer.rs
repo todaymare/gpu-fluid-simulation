@@ -124,6 +124,7 @@ pub struct Quad {
 pub struct ObjectStore {
     pub quads: Vec<Quad>,
     pub threshold: f32,
+    pub load_image_pending: bool,
 }
 
 
@@ -132,6 +133,7 @@ impl Default for ObjectStore {
         Self {
             quads: Vec::new(),
             threshold: 0.5,
+            load_image_pending: false,
         }
     }
 }
@@ -645,6 +647,32 @@ impl Renderer {
     }
 
 
+    pub fn load_image(&mut self, store: &mut ObjectStore) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("image", &["png", "jpg", "jpeg", "bmp", "gif", "tga", "webp"])
+            .pick_file()
+        else { return };
+
+        let Ok(bytes) = std::fs::read(&path) else { return };
+        let Ok(img) = image::load_from_memory(&bytes) else { return };
+        let rgba = img.to_rgba8();
+        let (w, h) = (rgba.width() as f32, rgba.height() as f32);
+        if w == 0.0 || h == 0.0 { return; }
+
+        let texture = self.atlas_manager.register_image(&self.device, &self.queue, &rgba);
+
+        // Fit into a 4x4 world-unit box, preserving aspect ratio.
+        let (scale_x, scale_y) = if w >= h { (4.0, 4.0 * h / w) } else { (4.0 * w / h, 4.0) };
+
+        store.quads.push(Quad {
+            pos: Vec3::ZERO,
+            scale: Vec2::new(scale_x, scale_y),
+            rot: 0.0,
+            colour: Vec4::ONE,
+            texture,
+        });
+    }
+
 
     pub fn render(&mut self, mut encoder: wgpu::CommandEncoder, store: &mut ObjectStore, egui: impl FnOnce(&egui::Context, &mut ObjectStore)) {
         let output = self.surface.get_current_texture().unwrap();
@@ -861,7 +889,7 @@ impl Renderer {
                             Texture::NO_TEXTURE => "None",
                             Texture::CIRCLE => "Circle",
                             Texture::HCIRCLE => "Hollow",
-                            _ => "?",
+                            other => "Image",
                         };
                         ComboBox::new(i, current)
                             .selected_text(current)
@@ -891,15 +919,21 @@ impl Renderer {
                         store.quads.remove(i);
                     }
 
-                    if ui.button("Add").clicked() {
-                        store.quads.push(Quad {
-                            pos: Vec3::ZERO,
-                            scale: Vec2::splat(1.0),
-                            rot: 0.0,
-                            colour: Vec4::ONE,
-                            texture: Texture::CIRCLE,
-                        });
-                    }
+                    ui.horizontal(|ui| {
+                        if ui.button("Add").clicked() {
+                            store.quads.push(Quad {
+                                pos: Vec3::ZERO,
+                                scale: Vec2::splat(1.0),
+                                rot: 0.0,
+                                colour: Vec4::ONE,
+                                texture: Texture::CIRCLE,
+                            });
+                        }
+
+                        if ui.button("Load image...").clicked() {
+                            store.load_image_pending = true;
+                        }
+                    });
 
                 }) });
 

@@ -21,4 +21,5 @@ egui-wgpu = { version = "0.32.0", features = ["winit"] }
 egui-winit = "0.32.0"
 
 image = "*"
+rfd = "0.15"
 sti = { git = "https://github.com/leddoo/sti" }

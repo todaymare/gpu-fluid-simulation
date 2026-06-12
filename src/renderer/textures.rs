@@ -149,6 +149,26 @@ impl AtlasManager {
     pub fn get_bg(&self, atlas_id: TextureAtlasId) -> &BindGroup {
         &self.atlases[atlas_id].bind_group
     }
+
+
+    /// Upload an RGBA8 image into a fresh atlas and return a handle to it.
+    ///
+    /// Each call creates a new atlas (cheap for a few images, wasteful for many).
+    /// Power-of-two cell sizing, padding extrusion and UV computation are all
+    /// handled by the builder pipeline, so the result is indistinguishable from
+    /// the built-in textures.
+    pub fn register_image(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+        image: &image::RgbaImage,
+    ) -> Texture {
+        let mut builder = self.create_atlas(TextureFormat::Rgba8UnormSrgb);
+        let dim = IVec2::new(image.width() as i32, image.height() as i32);
+        let texture = builder.register(dim, image.as_raw());
+        builder.finalize(device, queue);
+        texture
+    }
 }
 
 
