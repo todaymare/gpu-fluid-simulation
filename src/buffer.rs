@@ -74,9 +74,14 @@ impl<T: Pod + std::fmt::Debug> ResizableBuffer<T> {
             data = &data[..self.len];
         }
 
+        // StagingBelt requires a non-zero size; if there's nothing to write,
+        // skip the call entirely. The buffer's previous contents are preserved.
+        if data.is_empty() {
+            return;
+        }
 
         let mut view = belt.write_buffer(
-            encoder, 
+            encoder,
             &self.buffer,
             (offset * size_of::<T>()) as u64,
             NonZeroU64::new((data.len() * size_of::<T>()) as u64).unwrap(),

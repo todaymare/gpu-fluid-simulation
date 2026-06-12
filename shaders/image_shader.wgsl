@@ -3,83 +3,90 @@ struct Vertex {
 }
 
 
-struct FluidObject {
-    pos: vec2<f32>,
-    kind: u32,
-    pad: u32,
-    pad2: vec4<u32>,
+struct Instance {
+    @location(1) colour: vec4<f32>,
+    @location(2) uv: vec4<f32>,
+    @location(3) pos: vec2<f32>,
+    @location(4) scale: vec2<f32>,
+    @location(5) rot: f32,
+    @location(6) z: f32,
+    @location(7) kind: u32,
+}
+
+
+struct Fragment {
+    @builtin(position) position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+    @location(1) abs_uv: vec2<f32>,
+    @location(2) modulate: vec4<f32>,
+    @location(3) @interpolate(flat) kind: u32,
+    @location(4) world_pos: vec2<f32>,
 }
 
 
 struct Uniforms {
-    inv_proj: mat4x4<f32>,
+    proj: mat4x4<f32>,
     pad: vec3<u32>,
-    ssbo_len: u32,
+    treshold: f32,
 }
 
+@group(0) @binding(0) var<uniform> u : Uniforms;
 
-@group(0) @binding(0) var<uniform> uniform : Uniforms ;
-@group(1) @binding(0) var<storage, read_write> ssbo : array<FluidObject>;
+@group(1) @binding(0)
+var tex: texture_2d<f32>;
+@group(1) @binding(1)
+var samp: sampler;
 
 
-struct Fragment {
-    @builtin(position) screen_position: vec4<f32>,
-    @location(0) clip_position: vec4<f32>,
+fn make_transform_2d_mat4(pos: vec3<f32>, scale: vec2<f32>, rot: f32) -> mat4x4<f32> {
+    let c = cos(rot);
+    let s = sin(rot);
+
+    return mat4x4<f32>(
+        scale.x * c , scale.x * s, 0.0, 0.0,
+        -scale.y * s, scale.y * c, 0.0, 0.0,
+        0.0,          0.0        , 1.0, 0.0,
+        pos.x,        pos.y      , pos.z, 1.0
+    );
 }
-
 
 
 @vertex
-fn vs_main(vertex: Vertex) -> Fragment {
+fn vs_main(vertex: Vertex, instance: Instance) -> Fragment {
     var output : Fragment;
-    output.screen_position = vec4((vertex.position-vec2(0.5)) * 2.0, 0.0, 1.0);
-    output.clip_position = output.screen_position;
+
+    let mat = make_transform_2d_mat4(vec3(instance.pos, instance.z), instance.scale, instance.rot);
+
+
+    output.position = u.proj * mat * vec4(vertex.position, 0.0, 1.0);
+    output.modulate = instance.colour;
+
+    let local = vertex.position + vec2<f32>(0.5, 0.5);
+    let uv0 = instance.uv.xy;
+    let uv1 = instance.uv.zw;
+    // abs_uv is 0..1 across the sprite instead of across the whole texture, so it can be used for gradients and such
+    output.abs_uv = local;
+
+    output.uv = uv0 + local * (uv1 - uv0);
+    output.kind = instance.kind;
+    output.world_pos = instance.pos + vertex.position * instance.scale;
+
     return output;
 }
 
 
+fn luminance(c: vec3<f32>) -> f32 {
+    return dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
+}
+
+
 @fragment
-fn fs_main(input: Fragment) -> @location(0) vec4<u32> {
-    let clip_pos = input.clip_position;
-    let inv_pos = uniform.inv_proj * clip_pos;
-    let world_pos = (inv_pos.xyz / inv_pos.w).xy;
+fn fs_main(fragment: Fragment) -> @location(0) vec4<u32> {
+    let tex_color = textureSample(tex, samp, fragment.uv);
+    var colour = tex_color * fragment.modulate;
+    var lum = luminance(colour.xyz) * colour.w;
 
-    for (var i = 0u; i < uniform.ssbo_len; i = i + 1) {
-        let obj = ssbo[i];
-        
-        if obj.kind == 0 {
-            let dst = distance(world_pos, obj.pos);
-            let radius = bitcast<f32>(obj.pad);
-            if dst < radius {
-                return vec4<u32>(0);
-            }
-        } else if obj.kind == 1 {
-            let rot = bitcast<f32>(obj.pad);
-            let extents = bitcast<vec2<f32>>(obj.pad2.xy);
-            if point_in_rect(world_pos, obj.pos, extents, rot) {
-                return vec4<u32>(0);
-            }
-        }
-
-    }
-
-    return vec4<u32>(255);
+    if lum > u.treshold { return vec4(255u); }
+    else { return vec4(0u); }
 }
 
-
-fn point_in_rect(point: vec2<f32>, rect_center: vec2<f32>, size: vec2<f32>, rot: f32) -> bool {
-    // translate point to rect local space
-    let local = point - rect_center;
-
-    // rotate point by -rot to align with rectangle axes
-    let c = cos(-rot);
-    let s = sin(-rot);
-    let rotated = vec2<f32>(
-        local.x * c - local.y * s,
-        local.x * s + local.y * c
-    );
-
-    // check if inside axis-aligned rect
-    let half_size = size * 0.5;
-    return all(rotated >= -half_size) && all(rotated <= half_size);
-}

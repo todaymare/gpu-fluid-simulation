@@ -5,7 +5,7 @@ use glam::{UVec2, Vec2};
 use egui_wgpu::wgpu as wgpu;
 use wgpu::{util::{BufferInitDescriptor, DeviceExt}, BufferUsages, ComputePipeline, ShaderStages};
 
-use crate::{buffer::{ResizableBuffer, SSBO}, shader::create_shader_module, uniform::Uniform};
+use crate::{buffer::SSBO, shader::create_shader_module, uniform::Uniform};
 
 pub struct FluidSimulation {
     settings: SimulationSettings,

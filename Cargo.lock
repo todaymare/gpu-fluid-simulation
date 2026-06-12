@@ -2644,9 +2644,8 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "sti"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a6d7d9309038bc1b3b0b47aa0f38806c632879a6140707460b3b6e602c136132"
+version = "0.200.0"
+source = "git+https://github.com/leddoo/sti#2b4615cb1dc0f4bd9f315d53852279ebb7a958a3"
 
 [[package]]
 name = "strict-num"

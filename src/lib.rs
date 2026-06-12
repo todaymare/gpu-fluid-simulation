@@ -7,11 +7,10 @@ mod egui_tools;
 mod input;
 
 use std::time::Instant;
-use glam::{UVec2, Vec2, Vec4};
+use glam::{Vec2, Vec4};
 use rand::Rng;
 use winit::{application::ApplicationHandler, dpi::LogicalSize, event::WindowEvent, event_loop::{ActiveEventLoop, ControlFlow, EventLoop}, window::{Window, WindowId}};
-
-use crate::{input::InputManager, renderer::{Renderer, OBJECT_RENDER_TEXTURE_DIMS}, simulation::{FluidSimulation, SimulationSettings}};
+use crate::{input::InputManager, renderer::{Renderer, ObjectStore, OBJECT_RENDER_TEXTURE_DIMS}, simulation::SimulationSettings};
 
 
 
@@ -25,6 +24,7 @@ pub struct Engine {
     pos: Vec2,
     vel: Vec2,
 
+    objects: ObjectStore,
 
     pipe_pos: Vec2,
     pipe_gap: f32,
@@ -97,7 +97,7 @@ impl Engine {
 
 
 
-        self.renderer.render(encoder, |ctx| {
+        self.renderer.render(encoder, &mut self.objects, |ctx, _store| {
             egui::Window::new("Scene")
             .show(ctx, |ui| {
 
@@ -143,6 +143,7 @@ impl ApplicationHandler for EngineLauncher {
             time_since_simulation: 0.0,
             pos: Vec2::ZERO,
             vel: Vec2::ZERO,
+            objects: ObjectStore::default(),
             pipe_pos: Vec2::ZERO,
             pipe_gap: 5.0,
         })

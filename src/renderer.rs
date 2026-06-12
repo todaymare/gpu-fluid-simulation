@@ -1,12 +1,14 @@
+pub mod textures;
+
 use bytemuck::{Pod, Zeroable};
 use egui::ComboBox;
 use egui_wgpu::ScreenDescriptor;
-use glam::{Mat4, UVec2, UVec3, UVec4, Vec2, Vec3, Vec4};
-use image::{Rgb32FImage, RgbImage};
-use wgpu::{util::{DeviceExt, StagingBelt}, Buffer, BufferUsages};
+use glam::{Mat4, UVec2, Vec2, Vec3, Vec3Swizzles, Vec4};
+use sti::{key::Key, vec::KVec};
+use wgpu::{util::{DeviceExt, StagingBelt}, Buffer};
 use winit::window::Window;
 
-use crate::{buffer::SSBO, egui_tools::EguiRenderer, shader::create_shader_module, simulation::{FluidSimulation, SimulationSettings, TickSettings}, uniform::Uniform};
+use crate::{buffer::ResizableBuffer, egui_tools::EguiRenderer, renderer::textures::{AtlasManager, Texture, TextureAtlasId}, shader::create_shader_module, simulation::{FluidSimulation, SimulationSettings, TickSettings}, uniform::Uniform};
 
 
 const MSAA_SAMPLE_COUNT : u32 = 1;
@@ -16,14 +18,27 @@ pub const RENDER_DIMS : UVec2 = UVec2::new(1920/2, 1080/2);
 pub const OBJECT_RENDER_TEXTURE_DIMS : UVec2 = UVec2::splat(512);
 
 
-const QUAD_VERTICES : &[ParticleVertex] = &[
+// Vertices in [0, 1] used by the fluid pipeline. The fluid shader does
+// `(position - 0.5) * 2.0` to map to NDC, so this range becomes [-1, 1].
+const FLUID_QUAD_VERTICES : &[ParticleVertex] = &[
     ParticleVertex { pos: Vec2::new(1.0, 1.0) },
     ParticleVertex { pos: Vec2::new(1.0, 0.0) },
     ParticleVertex { pos: Vec2::new(0.0, 0.0) },
     ParticleVertex { pos: Vec2::new(0.0, 0.0) },
     ParticleVertex { pos: Vec2::new(0.0, 1.0) },
     ParticleVertex { pos: Vec2::new(1.0, 1.0) },
+];
 
+// Vertices in [-0.5, +0.5] used by the object pipeline. The new shader's
+// `make_transform_2d_mat4` scales by the instance scale, so this range
+// means "a 1x1 quad" in world units.
+const OBJECT_QUAD_VERTICES : &[ParticleVertex] = &[
+    ParticleVertex { pos: Vec2::new(0.5, 0.5) },
+    ParticleVertex { pos: Vec2::new(0.5, -0.5) },
+    ParticleVertex { pos: Vec2::new(-0.5, -0.5) },
+    ParticleVertex { pos: Vec2::new(-0.5, -0.5) },
+    ParticleVertex { pos: Vec2::new(-0.5, 0.5) },
+    ParticleVertex { pos: Vec2::new(0.5, 0.5) },
 ];
 
 
@@ -46,6 +61,8 @@ pub struct Renderer {
     fluid_pipeline: FluidRenderPipeline,
     object_pipeline: ObjectRenderPipeline,
 
+    pub atlas_manager: AtlasManager,
+
     pub egui: EguiRenderer,
 }
 
@@ -58,9 +75,10 @@ pub struct FluidRenderPipeline {
 
 pub struct ObjectRenderPipeline {
     uniform: Uniform<ObjectUniform>,
-    ssbo: SSBO<FluidObject>,
     render_pipeline: wgpu::RenderPipeline,
-    objects: Vec<FluidObject>,
+    quad_vertices: Buffer,
+    instances: ResizableBuffer<QuadInstance>,
+
     output_texture: wgpu::Texture,
     staging_buffer: wgpu::Buffer,
 
@@ -73,21 +91,52 @@ pub struct ObjectRenderPipeline {
 #[repr(C)]
 #[repr(align(16))]
 struct ObjectUniform {
-    inv_proj: Mat4,
+    proj: Mat4,
     pad: Vec3,
-    ssbo_len: u32,
+    treshold: f32,
 }
 
 
-#[derive(Clone, Copy, Pod, Zeroable, Debug)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
 #[repr(C)]
-#[repr(align(16))]
-struct FluidObject {
-    position: Vec2,
-    kind: u32,
-    pad: u32,
-    pad2: UVec4,
+struct QuadInstance {
+    pub colour: Vec4,
+    pub uv    : Vec4,
+    pub pos   : Vec2,
+    pub scale : Vec2,
+    pub rot   : f32,
+    pub z     : f32,
+    pub kind  : u32,
+    pub pad   : f32,
 }
+
+
+#[derive(Debug, Clone, Copy)]
+pub struct Quad {
+    pub pos: Vec3,
+    pub scale: Vec2,
+    pub rot: f32,
+    pub colour: Vec4,
+    pub texture: Texture,
+}
+
+
+pub struct ObjectStore {
+    pub quads: Vec<Quad>,
+    pub threshold: f32,
+}
+
+
+impl Default for ObjectStore {
+    fn default() -> Self {
+        Self {
+            quads: Vec::new(),
+            threshold: 0.5,
+        }
+    }
+}
+
+
 
 
 #[derive(Clone, Copy, Pod, Zeroable, Debug)]
@@ -154,6 +203,8 @@ impl Renderer {
         surface.configure(&device, &config);
 
         let simulation = FluidSimulation::new(&device, settings);
+
+        let atlas_manager = AtlasManager::new(&device, &queue);
 
         
         let fluid_pipeline = {
@@ -265,20 +316,12 @@ impl Renderer {
             });
 
 
-
-            let uniform = Uniform::new("object-shader-ssbo-len", &device, 0, wgpu::ShaderStages::VERTEX_FRAGMENT);
-            let ssbo : SSBO<FluidObject> = SSBO::new(
-                "object-shader-ssbo", 
-                &device, 
-                BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
-                wgpu::ShaderStages::VERTEX_FRAGMENT,
-                128,
-            );
+            let uniform = Uniform::new("object-shader-uniform", &device, 0, wgpu::ShaderStages::VERTEX_FRAGMENT);
 
 
             let rpl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("object-render-pipeline-layout"),
-                bind_group_layouts: &[&uniform.bind_group_layout(), ssbo.layout()],
+                bind_group_layouts: &[uniform.bind_group_layout(), &atlas_manager.bgl],
                 push_constant_ranges: &[],
             });
 
@@ -298,7 +341,7 @@ impl Renderer {
                     module: &shader,
                     entry_point: Some("vs_main"),
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
-                    buffers: &[ParticleVertex::desc()],
+                    buffers: &[ParticleVertex::desc(), QuadInstance::desc()],
                 },
 
 
@@ -336,12 +379,25 @@ impl Renderer {
             });
 
 
+            let quad_vertices_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("object-quad-vertices"),
+                contents: bytemuck::cast_slice(OBJECT_QUAD_VERTICES),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+
+            let instances = ResizableBuffer::new(
+                "object-instance-buffer",
+                &device,
+                wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                1024,
+            );
+
             let (sender, recv) = std::sync::mpsc::channel();
             ObjectRenderPipeline {
                 uniform,
-                ssbo,
                 render_pipeline: pipeline,
-                objects: vec![],
+                quad_vertices: quad_vertices_buf,
+                instances,
                 output_texture: texture,
                 staging_buffer: staging,
                 sender,
@@ -353,8 +409,8 @@ impl Renderer {
 
 
         let quad_vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("quad-vertices"),
-            contents: bytemuck::cast_slice(QUAD_VERTICES),
+            label: Some("fluid-quad-vertices"),
+            contents: bytemuck::cast_slice(FLUID_QUAD_VERTICES),
             usage: wgpu::BufferUsages::VERTEX,
         });
 
@@ -407,6 +463,7 @@ impl Renderer {
             fluid_pipeline,
             quad_vertices,
             object_pipeline,
+            atlas_manager,
         }
     }
 
@@ -417,13 +474,9 @@ impl Renderer {
 
 
 
-    pub fn render_fluid_to(&mut self, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView) {
+    pub fn render_fluid_to(&mut self, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView, store: &ObjectStore) {
 
         self.fluid_pipeline.uniform.update(&self.queue, &self.projection.inverse());
-        if !self.object_pipeline.objects.is_empty() {
-            self.object_pipeline.ssbo.resize(&self.device, encoder, self.object_pipeline.objects.len());
-            self.object_pipeline.ssbo.update(&mut self.staging_belt, encoder, &self.device, &self.object_pipeline.objects);
-        }
 
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -445,13 +498,6 @@ impl Renderer {
         });
 
 
-        self.object_pipeline.uniform.update(&self.queue, &ObjectUniform {
-            inv_proj: self.projection.inverse(),
-            ssbo_len: self.object_pipeline.objects.len() as u32,
-            pad: Vec3::ZERO,
-        });
-
-
         pass.set_pipeline(&self.fluid_pipeline.render_pipeline);
         pass.set_bind_group(0, self.simulation.simulation_settings_bg(), &[]);
         pass.set_bind_group(1, self.simulation.simulation_bg(), &[]);
@@ -459,9 +505,52 @@ impl Renderer {
 
         pass.set_vertex_buffer(0, self.quad_vertices.slice(..));
 
-        pass.draw(0..(QUAD_VERTICES.len() as _), 0..1);
+        pass.draw(0..(FLUID_QUAD_VERTICES.len() as _), 0..1);
 
         drop(pass);
+
+
+        // Bucket quads by atlas id, like ravioli does. Each bucket becomes
+        // a contiguous slice of the uploaded instance buffer and a single
+        // draw call with its own atlas bind group.
+        let mut buckets: KVec<TextureAtlasId, Vec<QuadInstance>> = KVec::new();
+        for q in &store.quads {
+            let atlas_id = q.texture.0;
+            if buckets.len() <= atlas_id.usize() {
+                buckets.resize(atlas_id.usize() + 1, Vec::new());
+            }
+            buckets[atlas_id].push(QuadInstance {
+                colour: q.colour,
+                uv: self.atlas_manager.get_uv(q.texture),
+                pos: q.pos.xy(),
+                scale: q.scale,
+                rot: q.rot,
+                z: q.pos.z,
+                kind: 0,
+                pad: 0.0,
+            });
+        }
+
+        // Flatten into a single contiguous upload, recording each bucket's
+        // offset range so the draw loop can issue one `draw` per atlas.
+        let mut flat: Vec<QuadInstance> = Vec::new();
+        let mut ranges: Vec<(TextureAtlasId, std::ops::Range<u32>)> = Vec::new();
+        for (atlas_id, bucket) in buckets.into_iter() {
+            if bucket.is_empty() { continue; }
+            let start = flat.len() as u32;
+            flat.extend(bucket);
+            let end = flat.len() as u32;
+            ranges.push((atlas_id, start..end));
+        }
+
+        self.object_pipeline.instances.resize(&self.device, encoder, flat.len());
+        self.object_pipeline.instances.write(&mut self.staging_belt, encoder, &self.device, 0, &flat);
+
+        self.object_pipeline.uniform.update(&self.queue, &ObjectUniform {
+            proj: self.projection,
+            treshold: store.threshold,
+            pad: Vec3::ZERO,
+        });
 
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -471,7 +560,7 @@ impl Renderer {
                     view: &self.object_pipeline.output_texture.create_view(&wgpu::wgt::TextureViewDescriptor::default()),
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
+                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 1.0, g: 0.0, b: 0.0, a: 0.0 }),
                         store: wgpu::StoreOp::Store,
                     },
                 })
@@ -485,50 +574,55 @@ impl Renderer {
 
         pass.set_pipeline(&self.object_pipeline.render_pipeline);
         pass.set_bind_group(0, &self.object_pipeline.uniform.bind_group, &[]);
-        pass.set_bind_group(1, self.object_pipeline.ssbo.bind_group(), &[]);
+        pass.set_vertex_buffer(0, self.object_pipeline.quad_vertices.slice(..));
+        pass.set_vertex_buffer(1, self.object_pipeline.instances.buffer.slice(..));
 
-        pass.set_vertex_buffer(0, self.quad_vertices.slice(..));
-        pass.draw(0..(QUAD_VERTICES.len() as _), 0..1);
+        for (atlas_id, range) in &ranges {
+            pass.set_bind_group(1, self.atlas_manager.get_bg(*atlas_id), &[]);
+            pass.draw(
+                0..(OBJECT_QUAD_VERTICES.len() as _),
+                range.clone(),
+            );
+        }
 
         drop(pass);
 
 
         if self.simulation.tick > 10 {
-        if let Ok(field) = self.object_pipeline.recv.recv() {
-            self.queue.write_buffer(
-                &self.simulation.force_field_texture(),
-                0,
-                bytemuck::cast_slice(&field),
-            );
+            if let Ok(field) = self.object_pipeline.recv.recv() {
+                self.queue.write_buffer(
+                    &self.simulation.force_field_texture(),
+                    0,
+                    bytemuck::cast_slice(&field),
+                );
 
-            encoder.copy_texture_to_buffer(
-                wgpu::TexelCopyTextureInfoBase {
-                    texture: &self.object_pipeline.output_texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                wgpu::TexelCopyBufferInfo {
-                    buffer: &self.object_pipeline.staging_buffer,
-                    layout: wgpu::TexelCopyBufferLayout {
-                        offset: 0,
-                        bytes_per_row: Some(OBJECT_RENDER_TEXTURE_DIMS.x),
-                        rows_per_image: None,
+                encoder.copy_texture_to_buffer(
+                    wgpu::TexelCopyTextureInfoBase {
+                        texture: &self.object_pipeline.output_texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
                     },
-                },
-                wgpu::Extent3d {
-                    width: OBJECT_RENDER_TEXTURE_DIMS.x,
-                    height: OBJECT_RENDER_TEXTURE_DIMS.y,
-                    depth_or_array_layers: 1,
-                },
-            );
+                    wgpu::TexelCopyBufferInfo {
+                        buffer: &self.object_pipeline.staging_buffer,
+                        layout: wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(OBJECT_RENDER_TEXTURE_DIMS.x),
+                            rows_per_image: None,
+                        },
+                    },
+                    wgpu::Extent3d {
+                        width: OBJECT_RENDER_TEXTURE_DIMS.x,
+                        height: OBJECT_RENDER_TEXTURE_DIMS.y,
+                        depth_or_array_layers: 1,
+                    },
+                );
+            }
         }
-        }
 
 
 
 
-        
         let buf = self.object_pipeline.staging_buffer.slice(..)
             .get_mapped_range();
         let slice : &[u8] = &*buf;
@@ -536,7 +630,6 @@ impl Renderer {
         let sender = self.object_pipeline.sender.clone();
         drop(buf);
         self.object_pipeline.staging_buffer.unmap();
-        //self.object_pipeline.objects.clear();
 
         std::thread::spawn(move || {
             let img = Image::new(
@@ -548,13 +641,12 @@ impl Renderer {
 
             sender.send(field).unwrap();
         });
-        
 
     }
 
 
 
-    pub fn render(&mut self, mut encoder: wgpu::CommandEncoder, egui: impl FnOnce(&egui::Context)) {
+    pub fn render(&mut self, mut encoder: wgpu::CommandEncoder, store: &mut ObjectStore, egui: impl FnOnce(&egui::Context, &mut ObjectStore)) {
         let output = self.surface.get_current_texture().unwrap();
         let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
 
@@ -564,7 +656,7 @@ impl Renderer {
             SIZE.y as f32 * 0.5, -SIZE.y * 0.5,
             -1.0, 0.0);
 
-        self.render_fluid_to(&mut encoder, &view);
+        self.render_fluid_to(&mut encoder, &view, store);
 
         let mut restart_sim = false;
         {
@@ -577,7 +669,7 @@ impl Renderer {
             self.egui.begin_frame(self.window);
 
 
-            egui(self.egui.context());
+            egui(self.egui.context(), store);
 
 
             egui::Window::new("spawn settings")
@@ -731,96 +823,81 @@ impl Renderer {
                 .vscroll(true)
                 .default_open(false)
                 .show(self.egui.context(), |ui| { ui.vertical(|ui| {
-                    for (i, object) in self.object_pipeline.objects.iter_mut().enumerate() {
-                        ui.label("object");
+                    ui.horizontal(|ui| {
+                        ui.label("threshold");
+                        ui.add(
+                            egui::widgets::DragValue::new(&mut store.threshold)
+                                .speed(0.01)
+                                .range(0.0..=1.0),
+                        );
+                    });
+
+                    ui.separator();
+
+                    let mut remove_idx: Option<usize> = None;
+                    for (i, quad) in store.quads.iter_mut().enumerate() {
+                        ui.label(format!("object {i}"));
 
                         ui.horizontal(|ui| {
                             ui.label("position");
-                            ui.add(
-                                egui::widgets::DragValue::new(&mut object.position.x)
-                                    .speed(0.1),
-                            );
-                            ui.add(
-                                egui::widgets::DragValue::new(&mut object.position.y)
-                                    .speed(0.1),
-                            );
+                            ui.add(egui::widgets::DragValue::new(&mut quad.pos.x).speed(0.1));
+                            ui.add(egui::widgets::DragValue::new(&mut quad.pos.y).speed(0.1));
+                            ui.add(egui::widgets::DragValue::new(&mut quad.pos.z).speed(0.1));
                         });
 
+                        ui.horizontal(|ui| {
+                            ui.label("scale");
+                            ui.add(egui::widgets::DragValue::new(&mut quad.scale.x).speed(0.1));
+                            ui.add(egui::widgets::DragValue::new(&mut quad.scale.y).speed(0.1));
+                        });
 
-                        let current = match object.kind {
-                            0 => "Circle",
-                            1 => "Rect",
-                            _ => unreachable!(),
+                        ui.horizontal(|ui| {
+                            ui.label("rotation");
+                            ui.add(egui::widgets::DragValue::new(&mut quad.rot).speed(0.01));
+                        });
+
+                        let current = match quad.texture {
+                            Texture::WHITE => "White",
+                            Texture::NO_TEXTURE => "None",
+                            Texture::CIRCLE => "Circle",
+                            Texture::HCIRCLE => "Hollow",
+                            _ => "?",
                         };
                         ComboBox::new(i, current)
                             .selected_text(current)
                             .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut object.kind, 0, "Circle");
-                                ui.selectable_value(&mut object.kind, 1, "Rect");
+                                ui.selectable_value(&mut quad.texture, Texture::WHITE, "White");
+                                ui.selectable_value(&mut quad.texture, Texture::NO_TEXTURE, "None");
+                                ui.selectable_value(&mut quad.texture, Texture::CIRCLE, "Circle");
+                                ui.selectable_value(&mut quad.texture, Texture::HCIRCLE, "Hollow");
                             });
 
-                        match object.kind {
-                            0 => {
-                                let mut radius = f32::from_ne_bytes(object.pad.to_ne_bytes());
-                                // circle
-                                ui.horizontal(|ui| {
-                                    ui.label("Radius");
-                                    ui.add(
-                                        egui::widgets::DragValue::new(&mut radius)
-                                            .speed(0.1)
-                                            .range(0.0..=f32::INFINITY)
-                                    );
-                                });
+                        ui.horizontal(|ui| {
+                            ui.label("colour");
+                            ui.add(egui::widgets::DragValue::new(&mut quad.colour.x).speed(0.01).range(0.0..=1.0));
+                            ui.add(egui::widgets::DragValue::new(&mut quad.colour.y).speed(0.01).range(0.0..=1.0));
+                            ui.add(egui::widgets::DragValue::new(&mut quad.colour.z).speed(0.01).range(0.0..=1.0));
+                            ui.add(egui::widgets::DragValue::new(&mut quad.colour.w).speed(0.01).range(0.0..=1.0));
+                        });
 
-                                object.pad = u32::from_ne_bytes(radius.to_ne_bytes());
-                            },
-
-                            1 => {
-                                let mut rot = f32::from_ne_bytes(object.pad.to_ne_bytes());
-                                let mut width = f32::from_ne_bytes(object.pad2.x.to_ne_bytes());
-                                let mut height = f32::from_ne_bytes(object.pad2.y.to_ne_bytes());
-
-                                ui.horizontal(|ui| {
-                                    ui.label("Rotation");
-                                    ui.add(
-                                        egui::widgets::DragValue::new(&mut rot)
-                                            .speed(0.1)
-                                            .range(0.0..=f32::INFINITY)
-                                    );
-                                });
-
-
-                                ui.horizontal(|ui| {
-                                    ui.label("Extents");
-                                    ui.add(
-                                        egui::widgets::DragValue::new(&mut width)
-                                            .speed(0.1),
-                                    );
-                                    ui.add(
-                                        egui::widgets::DragValue::new(&mut height)
-                                            .speed(0.1),
-                                    );
-                                });
-
-                                object.pad = u32::from_ne_bytes(rot.to_ne_bytes());
-                                object.pad2.x = u32::from_ne_bytes(width.to_ne_bytes());
-                                object.pad2.y = u32::from_ne_bytes(height.to_ne_bytes());
-                            }
-                            _ => unreachable!(),
+                        if ui.button("remove").clicked() {
+                            remove_idx = Some(i);
                         }
 
-
                         ui.separator();
-
                     }
 
+                    if let Some(i) = remove_idx {
+                        store.quads.remove(i);
+                    }
 
                     if ui.button("Add").clicked() {
-                        self.object_pipeline.objects.push(FluidObject {
-                            position: Vec2::ZERO,
-                            kind: 0,
-                            pad: 0,
-                            pad2: UVec4::ZERO,
+                        store.quads.push(Quad {
+                            pos: Vec3::ZERO,
+                            scale: Vec2::splat(1.0),
+                            rot: 0.0,
+                            colour: Vec4::ONE,
+                            texture: Texture::CIRCLE,
                         });
                     }
 
@@ -862,27 +939,24 @@ impl Renderer {
     }
 
 
-    pub fn draw_rect(&mut self, pos: Vec2, rot: f32, extents: Vec2) {
-        self.object_pipeline.objects.push(FluidObject {
-            position: pos,
-            kind: 1,
-            pad: u32::from_ne_bytes(rot.to_ne_bytes()),
-            pad2: UVec4::new(
-                u32::from_ne_bytes(extents.x.to_ne_bytes()),
-                u32::from_ne_bytes(extents.y.to_ne_bytes()),
-                0,
-                0
-            )
+    pub fn draw_rect(&mut self, store: &mut ObjectStore, pos: Vec2, rot: f32, extents: Vec2) {
+        store.quads.push(Quad {
+            pos: pos.extend(0.0),
+            scale: extents,
+            rot,
+            colour: Vec4::ONE,
+            texture: Texture::NO_TEXTURE,
         });
     }
 
 
-    pub fn draw_circle(&mut self, pos: Vec2, radius: f32) {
-        self.object_pipeline.objects.push(FluidObject {
-            position: pos,
-            kind: 0,
-            pad: u32::from_ne_bytes(radius.to_ne_bytes()),
-            pad2: UVec4::ZERO,
+    pub fn draw_circle(&mut self, store: &mut ObjectStore, pos: Vec2, radius: f32) {
+        store.quads.push(Quad {
+            pos: pos.extend(0.0),
+            scale: Vec2::splat(radius * 2.0),
+            rot: 0.0,
+            colour: Vec4::ONE,
+            texture: Texture::CIRCLE,
         });
     }
 
@@ -908,6 +982,55 @@ impl ParticleVertex {
                     shader_location: 0,
                 }
             ],
+        }
+    }
+}
+
+
+impl QuadInstance {
+    fn desc() -> wgpu::VertexBufferLayout<'static> {
+        const ATTRS: &[wgpu::VertexAttribute] = &[
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x4,
+                offset: core::mem::offset_of!(QuadInstance, colour) as _,
+                shader_location: 1,
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x4,
+                offset: core::mem::offset_of!(QuadInstance, uv) as _,
+                shader_location: 2,
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x2,
+                offset: core::mem::offset_of!(QuadInstance, pos) as _,
+                shader_location: 3,
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x2,
+                offset: core::mem::offset_of!(QuadInstance, scale) as _,
+                shader_location: 4,
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32,
+                offset: core::mem::offset_of!(QuadInstance, rot) as _,
+                shader_location: 5,
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32,
+                offset: core::mem::offset_of!(QuadInstance, z) as _,
+                shader_location: 6,
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Uint32,
+                offset: core::mem::offset_of!(QuadInstance, kind) as _,
+                shader_location: 7,
+            },
+        ];
+
+        wgpu::VertexBufferLayout {
+            array_stride: size_of::<Self>() as _,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: ATTRS,
         }
     }
 }
@@ -955,7 +1078,7 @@ fn generate_smooth_gradient_field(img: Image) -> Vec<Vec2> {
 
     for y in 0..height {
         for x in 0..width {
-            if img.get_pixel(x as u32, y as u32) > 128 {
+            if img.get_pixel(x as u32, y as u32) < 128 {
                 dist[y][x] = 0.0;
                 has_white = true;
             }
