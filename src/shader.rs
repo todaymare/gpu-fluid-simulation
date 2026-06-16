@@ -1,5 +1,6 @@
 use egui_wgpu::wgpu;
 use wgpu::ShaderSource;
+use crate::platform;
 
 pub fn create_shader_module(device: &wgpu::Device, mut desc: wgpu::ShaderModuleDescriptor) -> wgpu::ShaderModule {
     let str = match desc.source {
@@ -22,7 +23,7 @@ fn parse_shader_data(str: &str) -> String {
         if line.starts_with("#include") {
             let (_, path) = line.split_once(' ').unwrap();
             println!("opening {path}");
-            let file = std::fs::read_to_string(path).unwrap();
+            let file = platform::fs::read_to_string(path).unwrap();
             let file = parse_shader_data(&file);
             data.push_str("\n// INCLUDE START\n");
             data.push_str(file.as_str());

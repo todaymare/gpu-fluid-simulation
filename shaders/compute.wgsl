@@ -1,6 +1,19 @@
 #include shaders/funcs.wgsl
 
 
+@group(1) @binding(0)
+var<storage, read_write> in_particles : array<ParticleInstance>;
+
+
+@group(1) @binding(1)
+var<storage, read_write> start_indices: array<u32>;
+
+
+@group(1) @binding(2)
+var<storage, read> force_field : array<vec2<f32>>;
+
+
+
 @compute @workgroup_size(256)
 fn predict_next_position(
     @builtin(global_invocation_id) id: vec3<u32>,

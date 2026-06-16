@@ -58,25 +58,17 @@ struct Uniforms {
 
 const PI: f32 = 3.14159265359;
 const EPSILON: f32 = 1.19209290e-07;
+const E : f32 = 0.04;
+
+
+// NOTE: storage bindings are declared per-shader because WebGPU forbids
+// read-write storage in vertex/fragment stages. Each shader that needs the
+// particle / start_indices / force_field buffers declares them with the
+// appropriate access mode (read_write for compute, read for fragment).
 
 
 @group(0) @binding(0)
 var<uniform> u: Uniforms;
-
-@group(1) @binding(0)
-var<storage, read_write> in_particles : array<ParticleInstance>;
-
-
-@group(1) @binding(1)
-var<storage, read_write> start_indices: array<u32>;
-
-
-@group(1) @binding(2)
-var<storage> force_field : array<vec2<f32>>;
-
-
-
-const E : f32 = 0.04;
 
 
 // Poly6 kernel (scalar)
@@ -140,7 +132,6 @@ fn viscosity_kernel(h: f32, rad: f32) -> f32 {
         return 0.0;
     }
 }
-
 
 
 

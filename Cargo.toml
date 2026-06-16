@@ -3,6 +3,9 @@ name = "molasses"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+
 [dependencies]
 glam = { version = "0.30.5", features = ["bytemuck", "rand"] }
 
@@ -18,8 +21,25 @@ rand = "0.9.2"
 
 egui = "0.32.0"
 egui-wgpu = { version = "0.32.0", features = ["winit"] }
-egui-winit = "0.32.0"
+egui-winit = { version = "0.32.0", default-features = false }
 
 image = "*"
 rfd = "0.15"
 sti = { git = "https://github.com/leddoo/sti" }
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+wasm-bindgen = "*"
+wasm-bindgen-futures = "*"
+js-sys = "*"
+console_error_panic_hook = "*"
+console_log = "1"
+log = "*"
+web-sys = { version = "*", features = ["console", "HtmlCanvasElement", "Storage", "Window"] }
+instant = { version = "0.1", features = ["wasm-bindgen"] }
+include_dir = "0.7"
+hex = "*"
+getrandom = { version = "0.3", features = ["wasm_js"] }
+
+[profile.release]
+debug = 0
+overflow-checks = true

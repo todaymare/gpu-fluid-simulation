@@ -5,20 +5,43 @@ mod renderer;
 mod shader;
 mod egui_tools;
 mod input;
+mod platform;
 
-use std::time::Instant;
+use std::pin::Pin;
+
 use glam::{Vec2, Vec4};
 use rand::Rng;
 use winit::{application::ApplicationHandler, dpi::LogicalSize, event::WindowEvent, event_loop::{ActiveEventLoop, ControlFlow, EventLoop}, window::{Window, WindowId}};
 use crate::{input::InputManager, renderer::{Renderer, ObjectStore, OBJECT_RENDER_TEXTURE_DIMS}, simulation::SimulationSettings};
 
 
+#[cfg(target_family = "wasm")]
+use wasm_bindgen::prelude::wasm_bindgen;
+
+
+#[cfg(target_family = "wasm")]
+#[wasm_bindgen(start)]
+pub fn wasm_main() {
+    // Belt-and-braces panic handler. console_error_panic_hook formats panics
+    // with location info; the direct console::error_1 is a guaranteed fallback
+    // in case the hook library itself or its formatting ever fails.
+    std::panic::set_hook(Box::new(|info| {
+        let msg = info.to_string();
+        web_sys::console::error_1(&msg.into());
+    }));
+    console_error_panic_hook::set_once();
+
+    web_sys::console::log_1(&"[molasses] wasm_main: start".into());
+
+    run();
+}
+
 
 pub struct Engine {
     renderer: Renderer,
     input: InputManager,
 
-    last_frame: Instant,
+    last_frame: platform::Instant,
     time_since_simulation: f32,
 
     pos: Vec2,
@@ -32,21 +55,52 @@ pub struct Engine {
 
 
 impl Engine {
-    pub fn run() {
-        let event_loop = EventLoop::builder().build().unwrap();
+    pub async fn new(window: &'static Window) -> Self {
+        #[cfg(target_family = "wasm")]
+        web_sys::console::log_1(&"[molasses] Engine::new: start".into());
 
-        event_loop.set_control_flow(ControlFlow::Poll);
+        let sim_settings = SimulationSettings {
+            particle_count: 10_000,
+            particle_spacing: 0.1,
+            smoothing_radius: 1.0,
+            size: Vec2::new(53.0, 30.0),
+            texture_size: OBJECT_RENDER_TEXTURE_DIMS,
+        };
 
-        event_loop.run_app(&mut EngineLauncher { engine: None }).unwrap();
+        let mut renderer = Renderer::new(window, sim_settings).await;
+        #[cfg(target_family = "wasm")]
+        web_sys::console::log_1(&"[molasses] Engine::new: Renderer::new complete".into());
+        renderer.tick_settings.delta = 1.0 / 240.0;
+        renderer.tick_settings.pressure_constant = 200.0;
+        renderer.tick_settings.rest_density = 6.4;
+        renderer.tick_settings.damping_factor = 0.7;
+        renderer.tick_settings.viscosity_coefficient = 100.0;
+        renderer.tick_settings.velocity_scale = 0.0055;
+        renderer.tick_settings.velocity_log_factor = 5.0;
+
+        Self {
+            renderer,
+            input: InputManager::new(),
+            last_frame: platform::Instant::now(),
+            time_since_simulation: 0.0,
+            pos: Vec2::ZERO,
+            vel: Vec2::ZERO,
+            objects: ObjectStore::default(),
+            pipe_pos: Vec2::ZERO,
+            pipe_gap: 5.0,
+        }
     }
 
 
     pub fn redraw(&mut self) {
+        #[cfg(target_family = "wasm")]
+        web_sys::console::log_1(&"[molasses] redraw: start".into());
+
         self.renderer.device.poll(wgpu::PollType::Wait).unwrap();
 
         let elapsed = self.last_frame.elapsed();
         let dt = elapsed.as_secs_f32();
-        self.last_frame = Instant::now();
+        self.last_frame = platform::Instant::now();
 
         self.time_since_simulation += dt;
 
@@ -72,19 +126,6 @@ impl Engine {
         }
 
 
-        /*
-        println!("{}", self.pipe_pos);
-
-        self.renderer.draw_circle(self.pos, 1.0);
-        let gap = self.pipe_gap;
-        let mut pipe_pos = self.pipe_pos;
-        pipe_pos.y += 15.0 + gap;
-        self.renderer.draw_rect(pipe_pos, 0.0, Vec2::new(2.0, 30.0));
-        let mut pipe_pos = self.pipe_pos;
-        pipe_pos.y -= 15.0 + gap;
-        self.renderer.draw_rect(pipe_pos, 0.0, Vec2::new(2.0, 30.0));
-        */
-
         if self.pipe_pos.x < -(53.0 / 4.0) {
             self.pipe_gap += 3.5;
         }
@@ -96,6 +137,8 @@ impl Engine {
         }
 
 
+        #[cfg(target_family = "wasm")]
+        web_sys::console::log_1(&"[molasses] redraw: calling renderer.render".into());
 
         self.renderer.render(encoder, &mut self.objects, |ctx, _store| {
             egui::Window::new("Scene")
@@ -111,60 +154,203 @@ impl Engine {
         }
 
         self.renderer.window.request_redraw();
+
+        #[cfg(target_family = "wasm")]
+        web_sys::console::log_1(&"[molasses] redraw: end".into());
     }
 }
 
 
 
-struct EngineLauncher {
-    engine: Option<Engine>,
+enum AppState {
+    Active(Engine),
+    Initializing(Pin<Box<dyn Future<Output = Engine>>>, &'static Window),
+    None,
 }
 
 
-impl ApplicationHandler for EngineLauncher {
+struct App {
+    app: AppState,
+}
+
+
+impl App {
+    pub fn run() {
+        let event_loop = EventLoop::builder().build().unwrap();
+
+        event_loop.set_control_flow(ControlFlow::Poll);
+
+        event_loop.run_app(&mut App {
+            app: AppState::None,
+        }).unwrap();
+    }
+}
+
+
+pub fn run() {
+    App::run();
+}
+
+
+impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        let window = event_loop.create_window(Window::default_attributes().with_inner_size(LogicalSize::new(960, 540))).unwrap();
+        if !matches!(self.app, AppState::None) {
+            return;
+        }
 
-        let sim_settings = SimulationSettings {
-            particle_count: 10_000,
-            particle_spacing: 0.1,
-            smoothing_radius: 1.0,
-            size: Vec2::new(53.0, 30.0),
-            texture_size: OBJECT_RENDER_TEXTURE_DIMS,
+        #[cfg(target_family = "wasm")]
+        web_sys::console::log_1(&"[molasses] resumed: start".into());
 
+
+        // Determine the initial window size. On WASM we use the canvas's
+        // getBoundingClientRect (the actual laid-out CSS size, not just
+        // window.innerWidth — which can be 0 if the canvas's parent hasn't
+        // been laid out yet) and fall back to a safe default.
+        let (mut w, mut h) = (960u32, 540u32);
+
+        #[cfg(target_family = "wasm")]
+        {
+            use wasm_bindgen::JsCast;
+            let canvas = web_sys::window()
+                .and_then(|w| w.document())
+                .and_then(|d| d.get_element_by_id("game-canvas"))
+                .and_then(|el| el.dyn_into::<web_sys::HtmlCanvasElement>().ok());
+
+            if let Some(canvas) = canvas {
+                let rect = canvas.get_bounding_client_rect();
+                let cw = rect.width() as u32;
+                let ch = rect.height() as u32;
+                if cw > 0 && ch > 0 {
+                    w = cw;
+                    h = ch;
+                }
+            }
+
+            web_sys::console::log_1(&format!("[molasses] resumed: initial size {w}x{h}").into());
+        }
+
+
+        #[cfg(not(target_family = "wasm"))]
+        let window =
+            Window::default_attributes()
+            .with_inner_size(LogicalSize::new(w, h));
+
+        #[cfg(target_family = "wasm")]
+        let window = {
+            use winit::platform::web::WindowAttributesExtWebSys;
+            use wasm_bindgen::JsCast;
+
+            let canvas =
+                web_sys::window()
+                .and_then(|w| w.document())
+                .and_then(|d| d.get_element_by_id("game-canvas"))
+                .and_then(|el| el.dyn_into::<web_sys::HtmlCanvasElement>().ok())
+                .expect("Failed to find #game-canvas element");
+
+            // Force the canvas dimensions so the surface never has a 0 size.
+            // Use the rect-based w/h we computed above.
+            canvas.set_width(w);
+            canvas.set_height(h);
+
+            // Don't pass inner_size — let CSS `width:100%;height:100%` fill the viewport.
+            Window::default_attributes().with_canvas(Some(canvas))
         };
 
-        let mut renderer = pollster::block_on(Renderer::new(window, sim_settings));
-        renderer.tick_settings.delta = 1.0 / 240.0;
-        renderer.tick_settings.pressure_constant = 200.0;
-        renderer.tick_settings.rest_density = 6.4;
-        renderer.tick_settings.damping_factor = 0.7;
-        renderer.tick_settings.viscosity_coefficient = 100.0;
-        renderer.tick_settings.velocity_scale = 0.0055;
-        renderer.tick_settings.velocity_log_factor = 5.0;
+        let window = event_loop.create_window(window).unwrap();
 
-        self.engine = Some(Engine {
-            renderer,
-            input: InputManager::new(),
-            last_frame: Instant::now(),
-            time_since_simulation: 0.0,
-            pos: Vec2::ZERO,
-            vel: Vec2::ZERO,
-            objects: ObjectStore::default(),
-            pipe_pos: Vec2::ZERO,
-            pipe_gap: 5.0,
-        })
+        #[cfg(target_family = "wasm")]
+        {
+            web_sys::console::log_1(&"[molasses] resumed: window created".into());
+            // Immediately size the canvas to the viewport — the initial
+            // inner_size from `with_canvas` saw a stale layout rect.
+            let w = web_sys::window().unwrap().inner_width().unwrap().as_f64().unwrap() as u32;
+            let h = web_sys::window().unwrap().inner_height().unwrap().as_f64().unwrap() as u32;
+            let _ = window.request_inner_size(LogicalSize::new(w, h));
+        }
+
+        let window = Box::leak(Box::new(window));
+        let window = &*window;
+        window.request_redraw();
+
+        #[cfg(target_family = "wasm")]
+        {
+            use wasm_bindgen::closure::Closure;
+            use wasm_bindgen::JsCast;
+
+            let window_clone = window; // the winit window
+            let closure = Closure::wrap(Box::new(move || {
+                let w = web_sys::window().unwrap().inner_width().unwrap().as_f64().unwrap() as u32;
+                let h = web_sys::window().unwrap().inner_height().unwrap().as_f64().unwrap() as u32;
+                let _ = window_clone.request_inner_size(LogicalSize::new(w, h));
+            }) as Box<dyn FnMut()>);
+
+            web_sys::window()
+                .unwrap()
+                .add_event_listener_with_callback("resize", closure.as_ref().unchecked_ref())
+                .unwrap();
+
+            closure.forget();
+        }
+
+
+        let data = Box::pin(Engine::new(window));
+        self.app = AppState::Initializing(data, window);
+
+        #[cfg(target_family = "wasm")]
+        web_sys::console::log_1(&"[molasses] resumed: Initializing".into());
     }
 
 
     fn window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
-        window_id: WindowId,
+        _: WindowId,
         event: WindowEvent,
     ) {
-        let Some(engine) = self.engine.as_mut()
-        else { return };
+        let engine =
+        match &mut self.app {
+            AppState::Active(engine) => {
+                engine
+            },
+
+            AppState::Initializing(pin, window) => {
+                let waker = std::task::Waker::noop();
+                let mut cx = std::task::Context::from_waker(&waker);
+
+                window.request_redraw();
+
+                if let std::task::Poll::Ready(mut data) = pin.as_mut().poll(&mut cx) {
+                    #[cfg(target_family = "wasm")]
+                    web_sys::console::log_1(&"[molasses] init: ready, switching to Active".into());
+                    // Resize to the current window size — Resized events
+                    // that arrived while Initializing were swallowed.
+                    let size = data.renderer.window.inner_size();
+                    data.renderer.resize_surface(size.width, size.height);
+
+                    #[cfg(target_family = "wasm")]
+                    {
+                        use wasm_bindgen::JsCast;
+                        if let Some(canvas) = web_sys::window()
+                            .and_then(|w| w.document())
+                            .and_then(|d| d.get_element_by_id("game-canvas"))
+                            .and_then(|el| el.dyn_into::<web_sys::HtmlCanvasElement>().ok())
+                        {
+                            canvas.set_width(size.width);
+                            canvas.set_height(size.height);
+                        }
+                    }
+
+                    data.renderer.window.request_redraw();
+                    self.app = AppState::Active(data);
+                }
+
+                return;
+            },
+            AppState::None => {
+                return;
+            },
+        };
+
 
         if engine
             .renderer
@@ -187,7 +373,7 @@ impl ApplicationHandler for EngineLauncher {
 
 
 
-            WindowEvent::MouseInput { device_id, state, button } => {
+            WindowEvent::MouseInput { device_id: _, state, button } => {
                 let renderer = &mut engine.renderer;
                 match (state, button) {
                     (winit::event::ElementState::Pressed, winit::event::MouseButton::Left) => renderer.tick_settings.mouse_state = -1,
@@ -200,7 +386,7 @@ impl ApplicationHandler for EngineLauncher {
 
 
 
-            WindowEvent::CursorMoved { device_id, position } => {
+            WindowEvent::CursorMoved { device_id: _, position } => {
                 let renderer = &mut engine.renderer;
                 let position = Vec2::new(position.x as f32, position.y as f32);
 
@@ -237,7 +423,7 @@ impl ApplicationHandler for EngineLauncher {
                 };
 
 
-                if engine.input.is_key_pressed(winit::keyboard::KeyCode::ShiftLeft) 
+                if engine.input.is_key_pressed(winit::keyboard::KeyCode::ShiftLeft)
                     && engine.input.is_key_just_pressed(winit::keyboard::KeyCode::Escape) {
                     event_loop.exit();
                 }
@@ -248,8 +434,20 @@ impl ApplicationHandler for EngineLauncher {
 
             WindowEvent::Resized(v) => {
                 engine.renderer.resize_surface(v.width, v.height);
-            }
 
+                #[cfg(target_family = "wasm")]
+                {
+                    use wasm_bindgen::JsCast;
+                    if let Some(canvas) = web_sys::window()
+                        .and_then(|w| w.document())
+                        .and_then(|d| d.get_element_by_id("game-canvas"))
+                        .and_then(|el| el.dyn_into::<web_sys::HtmlCanvasElement>().ok())
+                    {
+                        canvas.set_width(v.width);
+                        canvas.set_height(v.height);
+                    }
+                }
+            }
 
 
 
@@ -262,6 +460,3 @@ impl ApplicationHandler for EngineLauncher {
 
     }
 }
-
-
-

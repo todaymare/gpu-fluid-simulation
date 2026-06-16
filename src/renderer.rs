@@ -84,6 +84,17 @@ pub struct ObjectRenderPipeline {
 
     sender: std::sync::mpsc::Sender<Vec<Vec2>>,
     recv: std::sync::mpsc::Receiver<Vec<Vec2>>,
+
+    // Set when the GPU has finished copying the previous frame's object texture
+    // into the staging buffer and the async map callback has fired. We poll
+    // this at the start of each `render_fluid_to` so the WebGPU backend
+    // (where `device.poll(Wait)` doesn't synchronously drive map callbacks)
+    // sees a fully-mapped buffer before we call `get_mapped_range`.
+    map_complete: std::sync::Arc<std::sync::Mutex<bool>>,
+
+    // Tracks whether the staging buffer currently has a map_async in flight
+    // (and therefore should not be mapped again until it is unmapped).
+    buffer_mapped: bool,
 }
 
 
@@ -149,12 +160,22 @@ struct ParticleVertex {
 
 
 impl Renderer {
-    pub async fn new(window: Window, settings: SimulationSettings) -> Self {
-        let window = Box::leak(Box::new(window));
+    pub async fn new(window: &'static Window, settings: SimulationSettings) -> Self {
         let size = window.inner_size();
+        // wgpu refuses a 0x0 surface texture. If the window is briefly 0
+        // (some web backends report the canvas's internal buffer before
+        // the CSS layout is committed) substitute a 1x1 placeholder; the
+        // real size will be applied on the next Resized event.
+        let size = winit::dpi::PhysicalSize::new(size.width.max(1), size.height.max(1));
 
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::from_env_or_default());
-        let surface = instance.create_surface(&*window).unwrap();
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            #[cfg(target_arch = "wasm32")]
+            backends: wgpu::Backends::BROWSER_WEBGPU,
+            #[cfg(not(target_arch = "wasm32"))]
+            backends: wgpu::Backends::all(),
+            ..Default::default()
+        });
+        let surface = instance.create_surface(window).unwrap();
 
         let adapter = instance.request_adapter(
             &wgpu::RequestAdapterOptions {
@@ -188,7 +209,14 @@ impl Renderer {
         let surface_format = surface_capabilities.formats.iter()
             .find(|f| f.is_srgb())
             .copied()
-            .unwrap_or(surface_capabilities.formats[0]);
+            .unwrap_or_else(|| {
+                #[cfg(target_arch = "wasm32")]
+                web_sys::console::log_1(&"[molasses] WARNING: no sRGB surface format available".into());
+                surface_capabilities.formats[0]
+            });
+
+        #[cfg(target_arch = "wasm32")]
+        web_sys::console::log_1(&format!("[molasses] surface format: {surface_format:?}").into());
 
 
         let config = wgpu::SurfaceConfiguration {
@@ -196,7 +224,14 @@ impl Renderer {
             format: surface_format,
             width: size.width,
             height: size.height,
-            present_mode: wgpu::PresentMode::Immediate,
+            // WebGPU only supports FIFO/Auto*. Use FIFO on web, Immediate elsewhere
+            // for the lowest-latency frame presentation.
+            present_mode: {
+                #[cfg(target_arch = "wasm32")]
+                { wgpu::PresentMode::Fifo }
+                #[cfg(not(target_arch = "wasm32"))]
+                { wgpu::PresentMode::Immediate }
+            },
             alpha_mode: surface_capabilities.alpha_modes[0],
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
@@ -221,7 +256,7 @@ impl Renderer {
 
             let rpl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("particle-render-pipeline-layout"),
-                bind_group_layouts: &[simulation.simulation_settings_bgl(), simulation.simulation_bgl(), &uniform.bind_group_layout()],
+                bind_group_layouts: &[simulation.simulation_settings_bgl(), simulation.render_bgl(), &uniform.bind_group_layout()],
                 push_constant_ranges: &[],
             });
 
@@ -404,6 +439,8 @@ impl Renderer {
                 staging_buffer: staging,
                 sender,
                 recv,
+                map_complete: std::sync::Arc::new(std::sync::Mutex::new(false)),
+                buffer_mapped: false,
             }
 
         };
@@ -448,8 +485,11 @@ impl Renderer {
         };
 
 
-        object_pipeline.staging_buffer.slice(..)
-            .map_async(wgpu::MapMode::Read, |_| ());
+        // The first map of the staging buffer is requested at the end of
+        // the first `render` call (see below). The first `render_fluid_to`
+        // will skip the read because the map hasn't completed yet -- the
+        // data is garbage anyway since no `copy_texture_to_buffer` was
+        // issued for this frame.
 
 
         Self {
@@ -480,6 +520,9 @@ impl Renderer {
 
     pub fn render_fluid_to(&mut self, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView, store: &ObjectStore) {
 
+        #[cfg(target_arch = "wasm32")]
+        web_sys::console::log_1(&"[molasses] render_fluid_to: start".into());
+
         self.fluid_pipeline.uniform.update(&self.queue, &self.projection.inverse());
 
 
@@ -504,7 +547,7 @@ impl Renderer {
 
         pass.set_pipeline(&self.fluid_pipeline.render_pipeline);
         pass.set_bind_group(0, self.simulation.simulation_settings_bg(), &[]);
-        pass.set_bind_group(1, self.simulation.simulation_bg(), &[]);
+        pass.set_bind_group(1, self.simulation.render_bg(), &[]);
         pass.set_bind_group(2, &self.fluid_pipeline.uniform.bind_group, &[]);
 
         pass.set_vertex_buffer(0, self.quad_vertices.slice(..));
@@ -593,7 +636,7 @@ impl Renderer {
 
 
         if self.simulation.tick > 10 {
-            if let Ok(field) = self.object_pipeline.recv.recv() {
+            if let Ok(field) = self.object_pipeline.recv.try_recv() {
                 self.queue.write_buffer(
                     &self.simulation.force_field_texture(),
                     0,
@@ -627,15 +670,23 @@ impl Renderer {
 
 
 
-        let buf = self.object_pipeline.staging_buffer.slice(..)
-            .get_mapped_range();
-        let slice : &[u8] = &*buf;
-        let slice = slice.to_vec();
-        let sender = self.object_pipeline.sender.clone();
-        drop(buf);
-        self.object_pipeline.staging_buffer.unmap();
+        // Read the staging buffer that was mapped at the end of the
+        // previous `render`. If the map hasn't completed yet (first frame
+        // or the WebGPU callback hasn't fired) skip the read and the
+        // unmap -- the buffer wasn't written to anyway.
+        #[cfg(target_arch = "wasm32")]
+        web_sys::console::log_1(&"[molasses] render_fluid_to: checking map flag".into());
+        if self.staging_buffer_ready() {
+            #[cfg(target_arch = "wasm32")]
+            web_sys::console::log_1(&"[molasses] render_fluid_to: map ready, reading".into());
+            let buf = self.object_pipeline.staging_buffer.slice(..)
+                .get_mapped_range();
+            let slice : &[u8] = &*buf;
+            let slice = slice.to_vec();
+            drop(buf);
+            self.object_pipeline.staging_buffer.unmap();
+            self.object_pipeline.buffer_mapped = false;
 
-        std::thread::spawn(move || {
             let img = Image::new(
                 &slice,
                 OBJECT_RENDER_TEXTURE_DIMS.x,
@@ -643,53 +694,122 @@ impl Renderer {
             );
             let field = generate_smooth_gradient_field(img);
 
-            sender.send(field).unwrap();
-        });
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let sender = self.object_pipeline.sender.clone();
+                std::thread::spawn(move || {
+                    sender.send(field).unwrap();
+                });
+            }
+
+            #[cfg(target_arch = "wasm32")]
+            {
+                self.queue.write_buffer(
+                    &self.simulation.force_field_texture(),
+                    0,
+                    bytemuck::cast_slice(&field),
+                );
+
+                encoder.copy_texture_to_buffer(
+                    wgpu::TexelCopyTextureInfoBase {
+                        texture: &self.object_pipeline.output_texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    wgpu::TexelCopyBufferInfo {
+                        buffer: &self.object_pipeline.staging_buffer,
+                        layout: wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(OBJECT_RENDER_TEXTURE_DIMS.x),
+                            rows_per_image: None,
+                        },
+                    },
+                    wgpu::Extent3d {
+                        width: OBJECT_RENDER_TEXTURE_DIMS.x,
+                        height: OBJECT_RENDER_TEXTURE_DIMS.y,
+                        depth_or_array_layers: 1,
+                    },
+                );
+            }
+        } else {
+            #[cfg(target_arch = "wasm32")]
+            web_sys::console::log_1(&"[molasses] render_fluid_to: map not ready, skipping read".into());
+        }
 
     }
 
 
     pub fn load_image(&mut self, store: &mut ObjectStore) {
-        let Some(path) = rfd::FileDialog::new()
-            .add_filter("image", &["png", "jpg", "jpeg", "bmp", "gif", "tga", "webp"])
-            .pick_file()
-        else { return };
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let Some(path) = rfd::FileDialog::new()
+                .add_filter("image", &["png", "jpg", "jpeg", "bmp", "gif", "tga", "webp"])
+                .pick_file()
+                else { return };
 
-        let Ok(bytes) = std::fs::read(&path) else { return };
-        let Ok(img) = image::load_from_memory(&bytes) else { return };
-        let rgba = img.to_rgba8();
-        let (w, h) = (rgba.width() as f32, rgba.height() as f32);
-        if w == 0.0 || h == 0.0 { return; }
+            let Ok(bytes) = std::fs::read(&path) else { return };
+            let Ok(img) = image::load_from_memory(&bytes) else { return };
+            let rgba = img.to_rgba8();
+            let (w, h) = (rgba.width() as f32, rgba.height() as f32);
+            if w == 0.0 || h == 0.0 { return; }
 
-        let texture = self.atlas_manager.register_image(&self.device, &self.queue, &rgba);
+            let texture = self.atlas_manager.register_image(&self.device, &self.queue, &rgba);
 
-        // Fit into a 4x4 world-unit box, preserving aspect ratio.
-        let (scale_x, scale_y) = if w >= h { (4.0, 4.0 * h / w) } else { (4.0 * w / h, 4.0) };
+            // Fit into a 4x4 world-unit box, preserving aspect ratio.
+            let (scale_x, scale_y) = if w >= h { (4.0, 4.0 * h / w) } else { (4.0 * w / h, 4.0) };
 
-        store.quads.push(Quad {
-            pos: Vec3::ZERO,
-            scale: Vec2::new(scale_x, scale_y),
-            rot: 0.0,
-            colour: Vec4::ONE,
-            texture,
-        });
+            store.quads.push(Quad {
+                pos: Vec3::ZERO,
+                scale: Vec2::new(scale_x, scale_y),
+                rot: 0.0,
+                colour: Vec4::ONE,
+                texture,
+            });
+        }
     }
 
 
     pub fn render(&mut self, mut encoder: wgpu::CommandEncoder, store: &mut ObjectStore, egui: impl FnOnce(&egui::Context, &mut ObjectStore)) {
+        #[cfg(target_arch = "wasm32")]
+        web_sys::console::log_1(&"[molasses] render: get_current_texture".into());
+
         let output = self.surface.get_current_texture().unwrap();
         let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
 
+        #[cfg(target_arch = "wasm32")]
+        web_sys::console::log_1(&"[molasses] render: got texture".into());
+
+
+        let aspect = self.config.width as f32 / self.config.height as f32;
+        let vert = SIZE.y;
+        let horz = vert * aspect;
+        let bounds = Vec2::new(horz, vert);
+
+        // Recreate the simulation's spatial grid if the bounds have grown
+        // enough to change the cell count.
+        if bounds != self.sim_settings.size {
+            self.sim_settings.size = bounds;
+            self.simulation.resize(&self.device, bounds);
+        }
 
         self.projection = glam::Mat4::orthographic_rh(
-            -SIZE.x * 0.5, SIZE.x as f32 * 0.5,
-            SIZE.y as f32 * 0.5, -SIZE.y * 0.5,
+            -bounds.x * 0.5, bounds.x * 0.5,
+            bounds.y * 0.5, -bounds.y * 0.5,
             -1.0, 0.0);
+
+        #[cfg(target_arch = "wasm32")]
+        web_sys::console::log_1(&"[molasses] render: pre render_fluid_to".into());
 
         self.render_fluid_to(&mut encoder, &view, store);
 
+        #[cfg(target_arch = "wasm32")]
+        web_sys::console::log_1(&"[molasses] render: post render_fluid_to".into());
+
         let mut restart_sim = false;
         {
+            #[cfg(target_arch = "wasm32")]
+            web_sys::console::log_1(&"[molasses] render: pre egui".into());
 
             let screen_descriptor = ScreenDescriptor {
                 size_in_pixels: [self.config.width, self.config.height],
@@ -968,23 +1088,51 @@ impl Renderer {
             );
         }
 
+        #[cfg(target_arch = "wasm32")]
+        web_sys::console::log_1(&"[molasses] render: post egui".into());
 
 
         self.staging_belt.finish();
         self.queue.submit(core::iter::once(encoder.finish()));
         self.staging_belt.recall();
 
+        #[cfg(target_arch = "wasm32")]
+        web_sys::console::log_1(&"[molasses] render: post submit".into());
+
         output.present();
 
+        #[cfg(target_arch = "wasm32")]
+        web_sys::console::log_1(&"[molasses] render: post present".into());
 
-        self.object_pipeline.staging_buffer.slice(..)
-            .map_async(wgpu::MapMode::Read, |_| ());
+
+        // Queue a map of the staging buffer for the NEXT frame, but only if
+        // we unmapped it this frame. On WASM the map may not have completed
+        // yet, in which case we leave the existing map in flight.
+        if !self.object_pipeline.buffer_mapped {
+            *self.object_pipeline.map_complete.lock().unwrap() = false;
+            let flag = std::sync::Arc::clone(&self.object_pipeline.map_complete);
+            self.object_pipeline.staging_buffer.slice(..)
+                .map_async(wgpu::MapMode::Read, move |_result| {
+                    *flag.lock().unwrap() = true;
+                });
+            self.object_pipeline.buffer_mapped = true;
+        }
 
 
 
         if restart_sim {
             self.restart_simulation();
         }
+    }
+
+
+    fn staging_buffer_ready(&self) -> bool {
+        // Returns true when the map_async callback has fired and the
+        // staging buffer is safe to read. The first frame after init has
+        // no map in flight yet, so this returns false and the caller skips
+        // the read; subsequent frames should see a completed map from the
+        // previous frame's tail.
+        *self.object_pipeline.map_complete.lock().unwrap()
     }
 
 

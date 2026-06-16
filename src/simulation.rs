@@ -7,7 +7,7 @@ use wgpu::{util::{BufferInitDescriptor, DeviceExt}, BufferUsages, ComputePipelin
 
 use crate::{buffer::SSBO, shader::create_shader_module, uniform::Uniform};
 
-pub struct FluidSimulation {
+    pub struct FluidSimulation {
     settings: SimulationSettings,
     pub tick: u32,
 
@@ -19,8 +19,10 @@ pub struct FluidSimulation {
     spatial_lookup: wgpu::BindGroup,
     simulation_bg: wgpu::BindGroup,
     sort_bg: wgpu::BindGroup,
+    render_bg: wgpu::BindGroup,
 
     simulation_bgl: wgpu::BindGroupLayout,
+    render_bgl: wgpu::BindGroupLayout,
 
     sort_buf_len: u32,
     sort_dispatch: u32,
@@ -256,7 +258,10 @@ impl FluidSimulation {
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    // WebGPU refuses read-write storage with vertex/fragment
+                    // visibility; this bind group is only ever used by compute
+                    // pipelines.
+                    visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Storage { read_only: false },
                         has_dynamic_offset: false,
@@ -266,7 +271,7 @@ impl FluidSimulation {
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
-                    visibility: wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Storage { read_only: false },
                         has_dynamic_offset: false,
@@ -276,7 +281,7 @@ impl FluidSimulation {
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 2,
-                    visibility: wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Storage { read_only: true },
                         has_dynamic_offset: false,
@@ -291,6 +296,68 @@ impl FluidSimulation {
         let simulation_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
             layout: &simulation_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: instances.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: start_indices.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: force_field_texture.as_entire_binding(),
+                },
+            ],
+        });
+
+
+        // WebGPU refuses to expose a read-write storage buffer to vertex or
+        // fragment stages. The compute pipeline writes to `instances` and
+        // `start_indices`, so the same bind group can't be used in the render
+        // pipeline. We expose a parallel bind group that points at the same
+        // underlying buffers but declares them as read-only and visible only
+        // to the fragment stage.
+        let render_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("render-bind-group-layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+
+        let render_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("render-bind-group"),
+            layout: &render_bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
@@ -449,8 +516,10 @@ impl FluidSimulation {
             sort_pipeline,
             simulation_bg: simulation_bind_group,
             sort_bg: sort_bind_group,
+            render_bg: render_bind_group,
 
             simulation_bgl: simulation_bind_group_layout,
+            render_bgl: render_bind_group_layout,
 
             sort_buf_len,
             sort_dispatch: sort_dispatch_count,
@@ -558,6 +627,16 @@ impl FluidSimulation {
     }
 
 
+    pub fn render_bgl(&self) -> &wgpu::BindGroupLayout {
+        &self.render_bgl
+    }
+
+
+    pub fn render_bg(&self) -> &wgpu::BindGroup {
+        &self.render_bg
+    }
+
+
     pub fn simulation_settings_bg(&self) -> &wgpu::BindGroup {
         &self.simulation_uniform.bind_group
     }
@@ -570,6 +649,58 @@ impl FluidSimulation {
 
     pub fn force_field_texture(&self) -> &wgpu::Buffer {
         &self.texture
+    }
+
+    pub fn resize(&mut self, device: &wgpu::Device, new_size: Vec2) {
+        self.settings.size = new_size;
+
+        let grid_w = (self.settings.size.x / self.settings.smoothing_radius).ceil() as usize + 2;
+        let grid_h = (self.settings.size.y / self.settings.smoothing_radius).ceil() as usize + 2;
+
+        self.start_indices = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("start-indices-buffer"),
+            size: (grid_w * grid_h * size_of::<u32>()) as _,
+            usage: BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
+
+        self.simulation_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &self.simulation_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.particles_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.start_indices.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.texture.as_entire_binding(),
+                },
+            ],
+        });
+
+        self.render_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("render-bind-group"),
+            layout: &self.render_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.particles_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.start_indices.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.texture.as_entire_binding(),
+                },
+            ],
+        });
     }
 }
 

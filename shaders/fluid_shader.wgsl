@@ -1,5 +1,18 @@
 #include shaders/funcs.wgsl
 
+
+@group(1) @binding(0)
+var<storage, read> in_particles : array<ParticleInstance>;
+
+
+@group(1) @binding(1)
+var<storage, read> start_indices: array<u32>;
+
+
+@group(1) @binding(2)
+var<storage, read> force_field : array<vec2<f32>>;
+
+
 struct Vertex {
     @location(0) position: vec2<f32>,
 }
