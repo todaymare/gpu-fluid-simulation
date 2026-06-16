@@ -60,9 +60,9 @@ impl Engine {
         web_sys::console::log_1(&"[molasses] Engine::new: start".into());
 
         let sim_settings = SimulationSettings {
-            particle_count: 10_000,
+            particle_count: 20_000,
             particle_spacing: 0.1,
-            smoothing_radius: 1.0,
+            smoothing_radius: 0.5,
             size: Vec2::new(53.0, 30.0),
             texture_size: OBJECT_RENDER_TEXTURE_DIMS,
         };
@@ -70,13 +70,16 @@ impl Engine {
         let mut renderer = Renderer::new(window, sim_settings).await;
         #[cfg(target_family = "wasm")]
         web_sys::console::log_1(&"[molasses] Engine::new: Renderer::new complete".into());
-        renderer.tick_settings.delta = 1.0 / 240.0;
+        renderer.tick_settings.delta = 1.0 / 120.0;
+        renderer.tick_settings.gravity = Vec2::new(0.0, 15.0);
         renderer.tick_settings.pressure_constant = 200.0;
-        renderer.tick_settings.rest_density = 6.4;
-        renderer.tick_settings.damping_factor = 0.7;
-        renderer.tick_settings.viscosity_coefficient = 100.0;
-        renderer.tick_settings.velocity_scale = 0.0055;
-        renderer.tick_settings.velocity_log_factor = 5.0;
+        renderer.tick_settings.rest_density = 15.0;
+        renderer.tick_settings.damping_factor = 0.2;
+        renderer.tick_settings.viscosity_coefficient = 200.0;
+        renderer.tick_settings.surface_tension_treshold = 2.0;
+        renderer.tick_settings.surface_tension_coefficient = 0.2;
+        renderer.tick_settings.mouse_force_radius = 3.0;
+        renderer.tick_settings.mouse_force_power = 2.0;
 
         Self {
             renderer,
@@ -141,10 +144,6 @@ impl Engine {
         web_sys::console::log_1(&"[molasses] redraw: calling renderer.render".into());
 
         self.renderer.render(encoder, &mut self.objects, |ctx, _store| {
-            egui::Window::new("Scene")
-            .show(ctx, |ui| {
-
-            });
 
         });
 

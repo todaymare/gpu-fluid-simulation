@@ -49,9 +49,19 @@ struct Uniforms {
     texture_size: vec2<f32>,
 
     show_force_field: u32,
-    velocity_scale: f32,
-    velocity_log_factor: f32,
-    _pad0: u32,
+    density_scale: f32,
+    density_log_factor: f32,
+
+    render_smoothing: f32,
+    render_base_color: vec4<f32>,
+    render_lerp_color: vec4<f32>,
+
+    max_render_density: f32,
+
+    render_saturation_color: vec4<f32>,
+    render_edge_color: vec4<f32>,
+
+    edge_distance: f32,
 
 }
 

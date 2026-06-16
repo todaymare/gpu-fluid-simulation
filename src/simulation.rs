@@ -1,7 +1,7 @@
 use std::{f32::consts::PI, num::NonZero};
 
 use bytemuck::{Pod, Zeroable};
-use glam::{UVec2, Vec2};
+use glam::{UVec2, Vec2, Vec3, Vec4};
 use egui_wgpu::wgpu as wgpu;
 use wgpu::{util::{BufferInitDescriptor, DeviceExt}, BufferUsages, ComputePipeline, ShaderStages};
 
@@ -35,8 +35,6 @@ use crate::{buffer::SSBO, shader::create_shader_module, uniform::Uniform};
     calculate_density: ComputePipeline,
     move_particle: ComputePipeline,
     sort_pipeline: ComputePipeline,
-
-    pub show_force_field: bool,
 
 }
 
@@ -92,9 +90,21 @@ pub struct SimulationUniform {
     texture_size: Vec2,
 
     show_force_field: u32,
-    velocity_scale: f32,
-    velocity_log_factor: f32,
-    _pad0: u32,
+    density_scale: f32,
+    density_log_factor: f32,
+
+    render_smoothing: f32,
+    _pad1: [u8; 8],
+    render_base_color: Vec4,
+    render_lerp_color: Vec4,
+
+    max_render_density: f32,
+    _pad2: [u8; 12],
+    render_saturation_color: Vec4,
+    render_edge_color: Vec4,
+
+    edge_distance: f32,
+    _pad3: [u8; 12],
 
 }
 
@@ -128,8 +138,21 @@ pub struct TickSettings {
     pub mouse_force_power: f32,
     pub mouse_pos: Vec2,
     pub mouse_state: i32,
-    pub velocity_scale: f32,
-    pub velocity_log_factor: f32,
+}
+
+
+#[derive(Clone, Copy)]
+pub struct RenderSettings {
+    pub density_scale: f32,
+    pub density_log_factor: f32,
+    pub show_force_field: bool,
+    pub render_smoothing: f32,
+    pub render_base_color: Vec4,
+    pub render_lerp_color: Vec4,
+    pub max_render_density: f32,
+    pub render_saturation_color: Vec4,
+    pub render_edge_color: Vec4,
+    pub edge_distance: f32,
 }
 
 
@@ -523,14 +546,12 @@ impl FluidSimulation {
 
             sort_buf_len,
             sort_dispatch: sort_dispatch_count,
-
-            show_force_field: false,
         }
     }
 
 
 
-    pub fn tick(&mut self, queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder, settings: TickSettings) {
+    pub fn tick(&mut self, queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder, settings: TickSettings, render_settings: RenderSettings) {
         self.tick += 1;
 
 
@@ -568,10 +589,19 @@ impl FluidSimulation {
             grid_w: grid_w as u32,
             grid_h: grid_h as u32,
             texture_size: self.settings.texture_size.as_vec2(),
-            show_force_field: if self.show_force_field { 1 } else { 0 },
-            velocity_scale: settings.velocity_scale,
-            velocity_log_factor: settings.velocity_log_factor,
-            _pad0: 0,
+            show_force_field: if render_settings.show_force_field { 1 } else { 0 },
+            density_scale: render_settings.density_scale,
+            density_log_factor: render_settings.density_log_factor,
+            render_smoothing: render_settings.render_smoothing,
+            _pad1: [0; 8],
+            render_base_color: render_settings.render_base_color,
+            render_lerp_color: render_settings.render_lerp_color,
+            max_render_density: render_settings.max_render_density,
+            _pad2: [0; 12],
+            render_saturation_color: render_settings.render_saturation_color,
+            render_edge_color: render_settings.render_edge_color,
+            edge_distance: render_settings.edge_distance,
+            _pad3: [0; 12],
         };
 
         self.simulation_uniform.update(queue, &uniform);

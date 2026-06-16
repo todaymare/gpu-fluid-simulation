@@ -8,7 +8,7 @@ use sti::{key::Key, vec::KVec};
 use wgpu::{util::{DeviceExt, StagingBelt}, Buffer};
 use winit::window::Window;
 
-use crate::{buffer::ResizableBuffer, egui_tools::EguiRenderer, renderer::textures::{AtlasManager, Texture, TextureAtlasId}, shader::create_shader_module, simulation::{FluidSimulation, SimulationSettings, TickSettings}, uniform::Uniform};
+use crate::{buffer::ResizableBuffer, egui_tools::EguiRenderer, renderer::textures::{AtlasManager, Texture, TextureAtlasId}, shader::create_shader_module, simulation::{FluidSimulation, RenderSettings, SimulationSettings, TickSettings}, uniform::Uniform};
 
 
 const MSAA_SAMPLE_COUNT : u32 = 1;
@@ -56,6 +56,7 @@ pub struct Renderer {
     
     sim_settings: SimulationSettings,
     pub tick_settings: TickSettings,
+    pub render_settings: RenderSettings,
 
     quad_vertices: Buffer,
     fluid_pipeline: FluidRenderPipeline,
@@ -480,8 +481,20 @@ impl Renderer {
             mouse_force_power: 150.0,
             mouse_pos: Vec2::ZERO,
             mouse_state: 0,
-            velocity_scale: 0.0055,
-            velocity_log_factor: 5.0,
+        };
+
+
+        let render_settings = RenderSettings {
+            density_scale: 0.01,
+            density_log_factor: 5.0,
+            show_force_field: false,
+            render_smoothing: 0.06,
+            render_base_color: Vec4::new(0.4, 0.7, 1.0, 1.0),
+            render_lerp_color: Vec4::new(1.0, 1.0, 1.0, 1.0),
+            max_render_density: 30.0,
+            render_saturation_color: Vec4::new(1.0, 1.0, 1.0, 1.0),
+            render_edge_color: Vec4::new(1.0, 1.0, 1.0, 1.0),
+            edge_distance: 0.4,
         };
 
 
@@ -502,6 +515,7 @@ impl Renderer {
             staging_belt: StagingBelt::new(1024 * 1024),
             projection: Mat4::from_scale(Vec3::splat(1.0)),
             tick_settings,
+            render_settings,
             sim_settings: settings,
             egui,
             fluid_pipeline,
@@ -513,7 +527,7 @@ impl Renderer {
 
 
     pub fn tick(&mut self, encoder: &mut wgpu::CommandEncoder) {
-        self.simulation.tick(&self.queue, encoder, self.tick_settings);
+        self.simulation.tick(&self.queue, encoder, self.tick_settings, self.render_settings);
     }
 
 
@@ -964,25 +978,117 @@ impl Renderer {
                                 .speed(0.025),
                         );
                     });
+                });
 
+
+            egui::Window::new("rendering")
+                .resizable(true)
+                .vscroll(true)
+                .default_open(false)
+                .auto_sized()
+                .show(self.egui.context(), |ui| {
                     ui.horizontal(|ui| {
-                        ui.label("velocity scale");
+                        ui.label("density scale");
                         ui.add(
-                            egui::widgets::DragValue::new(&mut self.tick_settings.velocity_scale)
+                            egui::widgets::DragValue::new(&mut self.render_settings.density_scale)
                                 .range(0.0..=f32::MAX)
                                 .speed(0.0001),
                         );
                     });
+
                     ui.horizontal(|ui| {
-                        ui.label("velocity log factor");
+                        ui.label("density log factor");
                         ui.add(
-                            egui::widgets::DragValue::new(&mut self.tick_settings.velocity_log_factor)
+                            egui::widgets::DragValue::new(&mut self.render_settings.density_log_factor)
                                 .range(0.001..=100.0)
                                 .speed(0.05),
                         );
                     });
 
-                    ui.checkbox(&mut self.simulation.show_force_field, "show force field");
+                    ui.horizontal(|ui| {
+                        ui.label("render smoothing");
+                        ui.add(
+                            egui::widgets::DragValue::new(&mut self.render_settings.render_smoothing)
+                                .range(0.0001..=f32::MAX)
+                                .speed(0.005),
+                        );
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label("max render density");
+                        ui.add(
+                            egui::widgets::DragValue::new(&mut self.render_settings.max_render_density)
+                                .range(0.0..=f32::MAX)
+                                .speed(0.1),
+                        );
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label("base colour");
+                        let mut rgb = [
+                            self.render_settings.render_base_color.x,
+                            self.render_settings.render_base_color.y,
+                            self.render_settings.render_base_color.z,
+                        ];
+                        if egui::color_picker::color_edit_button_rgb(ui, &mut rgb).changed() {
+                            self.render_settings.render_base_color.x = rgb[0];
+                            self.render_settings.render_base_color.y = rgb[1];
+                            self.render_settings.render_base_color.z = rgb[2];
+                        }
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label("lerp colour");
+                        let mut rgb = [
+                            self.render_settings.render_lerp_color.x,
+                            self.render_settings.render_lerp_color.y,
+                            self.render_settings.render_lerp_color.z,
+                        ];
+                        if egui::color_picker::color_edit_button_rgb(ui, &mut rgb).changed() {
+                            self.render_settings.render_lerp_color.x = rgb[0];
+                            self.render_settings.render_lerp_color.y = rgb[1];
+                            self.render_settings.render_lerp_color.z = rgb[2];
+                        }
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label("edge colour");
+                        let mut rgb = [
+                            self.render_settings.render_edge_color.x,
+                            self.render_settings.render_edge_color.y,
+                            self.render_settings.render_edge_color.z,
+                        ];
+                        if egui::color_picker::color_edit_button_rgb(ui, &mut rgb).changed() {
+                            self.render_settings.render_edge_color.x = rgb[0];
+                            self.render_settings.render_edge_color.y = rgb[1];
+                            self.render_settings.render_edge_color.z = rgb[2];
+                        }
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label("edge distance");
+                        ui.add(
+                            egui::widgets::DragValue::new(&mut self.render_settings.edge_distance)
+                                .range(0.0..=f32::MAX)
+                                .speed(0.01),
+                        );
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label("saturation colour");
+                        let mut rgb = [
+                            self.render_settings.render_saturation_color.x,
+                            self.render_settings.render_saturation_color.y,
+                            self.render_settings.render_saturation_color.z,
+                        ];
+                        if egui::color_picker::color_edit_button_rgb(ui, &mut rgb).changed() {
+                            self.render_settings.render_saturation_color.x = rgb[0];
+                            self.render_settings.render_saturation_color.y = rgb[1];
+                            self.render_settings.render_saturation_color.z = rgb[2];
+                        }
+                    });
+
+                    ui.checkbox(&mut self.render_settings.show_force_field, "show force field");
                 });
 
 
@@ -1042,10 +1148,15 @@ impl Renderer {
 
                         ui.horizontal(|ui| {
                             ui.label("colour");
-                            ui.add(egui::widgets::DragValue::new(&mut quad.colour.x).speed(0.01).range(0.0..=1.0));
-                            ui.add(egui::widgets::DragValue::new(&mut quad.colour.y).speed(0.01).range(0.0..=1.0));
-                            ui.add(egui::widgets::DragValue::new(&mut quad.colour.z).speed(0.01).range(0.0..=1.0));
-                            ui.add(egui::widgets::DragValue::new(&mut quad.colour.w).speed(0.01).range(0.0..=1.0));
+                            let mut rgba = egui::Rgba::from_rgba_unmultiplied(
+                                quad.colour.x, quad.colour.y, quad.colour.z, quad.colour.w,
+                            );
+                            if egui::color_picker::color_edit_button_rgba(ui, &mut rgba, egui::color_picker::Alpha::BlendOrAdditive).changed() {
+                                quad.colour.x = rgba.r();
+                                quad.colour.y = rgba.g();
+                                quad.colour.z = rgba.b();
+                                quad.colour.w = rgba.a();
+                            }
                         });
 
                         if ui.button("remove").clicked() {

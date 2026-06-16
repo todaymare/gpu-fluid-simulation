@@ -76,7 +76,7 @@ fn fs_main(input: Fragment) -> @location(0) vec4<f32> {
                 let offset = p - point;
                 let r2 = dot(offset, offset);
 
-                let contrib = exp(-r2 / (0.06));
+                let contrib = exp(-r2 / (u.render_smoothing));
                 density += contrib;
                 velocity_factor += contrib * length(vel); // weighted by proximity
                 // func end
@@ -89,29 +89,31 @@ fn fs_main(input: Fragment) -> @location(0) vec4<f32> {
 
 
     // Normalize / scale velocity factor for color mapping
-    velocity_factor = velocity_factor * u.velocity_scale;
+    velocity_factor = velocity_factor * u.density_scale;
 
-    velocity_factor = log(1.0 + u.velocity_log_factor * velocity_factor) / log(1.0 + u.velocity_log_factor);
+    velocity_factor = log(1.0 + u.density_log_factor * velocity_factor) / log(1.0 + u.density_log_factor);
     velocity_factor = clamp(velocity_factor, 0.0, 1.0);
 
     // Fluid interior
     let interior = smoothstep(0.5, 1.5, density);
 
     // Edge highlighting
-    var edge = smoothstep(0.7, 1.0, density) - smoothstep(1.0, 1.5, density);
+    let edge_inner = 1.0 - u.edge_distance;
+    let edge_outer = 1.0 + u.edge_distance;
+    var edge = smoothstep(edge_inner, 1.0, density) - smoothstep(1.0, edge_outer, density);
     edge = edge * (1.0 + velocity_factor * 2.0); // moving particles = stronger edges
 
-    // Color mapping: blue (slow) → red (fast)
-    let base_color = mix(vec3<f32>(0.0, 0.5, 1.0), vec3<f32>(1.0, 0.0, 0.0), velocity_factor) * interior;
-    let edge_color = vec3<f32>(1.0, 1.0, 1.0) * edge;
+    // Color mapping: base colour (slow) → lerp colour (fast)
+    let base_color = mix(u.render_base_color.xyz, u.render_lerp_color.xyz, velocity_factor) * interior;
+    let edge_color = u.render_edge_color.xyz * edge;
 
     let final_color = base_color + edge_color;
 
     // Alpha
     let alpha = clamp(interior, 0.0, 1.0);
 
-    if density > 50.0 {
-        return vec4<f32>(0.0, 0.0, 1.0, 1.0);
+    if density > u.max_render_density {
+        return u.render_saturation_color;
     }
 
     if u.show_force_field != 0u {
