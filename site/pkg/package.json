@@ -2,7 +2,7 @@
   "name": "molasses",
   "version": "0.1.0",
   "files": [
-    "app_bg.wasm",
+    "app.wasm",
     "app.js",
     "app.d.ts"
   ],
