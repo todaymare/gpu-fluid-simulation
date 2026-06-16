@@ -2,12 +2,12 @@
   "name": "molasses",
   "version": "0.1.0",
   "files": [
-    "molasses_bg.wasm",
-    "molasses.js",
-    "molasses.d.ts"
+    "app_bg.wasm",
+    "app.js",
+    "app.d.ts"
   ],
-  "module": "molasses.js",
-  "types": "molasses.d.ts",
+  "module": "app.js",
+  "types": "app.d.ts",
   "sideEffects": [
     "./snippets/*"
   ]

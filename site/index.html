@@ -178,7 +178,7 @@
             try {
                 // Fetch wasm with progress tracking
                 setStatus('Fetching...');
-                const response = await fetch('./pkg/molasses_bg.wasm');
+                const response = await fetch('./pkg/app_bg.wasm');
 
                 if (!response.ok) {
                     throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -211,7 +211,7 @@
                 }
 
                 // Init wasm via wasm-pack's generated module
-                const init = (await import('./pkg/molasses.js')).default;
+                const init = (await import('./pkg/app.js')).default;
                 await init(wasmBytes.buffer);
 
                 // Fire a resize so winit picks up the current viewport size
