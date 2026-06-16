@@ -49,9 +49,9 @@ struct Uniforms {
     texture_size: vec2<f32>,
 
     show_force_field: u32,
+    velocity_scale: f32,
+    velocity_log_factor: f32,
     _pad0: u32,
-    _pad1: u32,
-    _pad2: u32,
 
 }
 

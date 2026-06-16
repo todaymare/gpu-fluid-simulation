@@ -90,9 +90,9 @@ pub struct SimulationUniform {
     texture_size: Vec2,
 
     show_force_field: u32,
+    velocity_scale: f32,
+    velocity_log_factor: f32,
     _pad0: u32,
-    _pad1: u32,
-    _pad2: u32,
 
 }
 
@@ -126,6 +126,8 @@ pub struct TickSettings {
     pub mouse_force_power: f32,
     pub mouse_pos: Vec2,
     pub mouse_state: i32,
+    pub velocity_scale: f32,
+    pub velocity_log_factor: f32,
 }
 
 
@@ -143,27 +145,32 @@ struct ParticleInstance {
 
 
 impl FluidSimulation {
-    pub fn new(device: &wgpu::Device, settings: SimulationSettings) -> Self {
+    pub fn new(device: &wgpu::Device, mut settings: SimulationSettings) -> Self {
         let grid_w = (settings.size.x / settings.smoothing_radius).ceil() as usize + 2;
         let grid_h = (settings.size.y / settings.smoothing_radius).ceil() as usize + 2;
 
 
-        let particle_count = settings.particle_count;
-        let particle_spacing = settings.particle_spacing;
-        
-        let particles_per_row = (particle_count as f32).sqrt();
-        let particles_per_column = (particle_count as f32 - 1.0) / particles_per_row + 1.0;
+        let aspect = settings.size.x / settings.size.y;
+        let per_row = (settings.particle_count as f32 * aspect).sqrt().ceil() as usize;
+        let per_col = (settings.particle_count as f32 / per_row as f32).ceil() as usize;
+        let actual_count = per_row * per_col;
+        settings.particle_count = actual_count as u32;
+        let spacing_x = settings.size.x / per_row as f32;
+        let spacing_y = settings.size.y / per_col as f32;
 
-        let buf = Vec::from_iter((0..particle_count)
+        let buf = Vec::from_iter((0..actual_count)
             .map(|i| {
-                let x = i as usize % particles_per_row as usize;
-                let x = (x as f32  - particles_per_row * 0.5 + 0.5) * particle_spacing;
-                let y = ((i as f32 / particles_per_row).floor() - particles_per_column * 0.5 + 0.5) * particle_spacing;
+                let x = (i as usize % per_row) as f32;
+                let y = (i as usize / per_row) as f32;
+                let x = (x + 0.5) * spacing_x - settings.size.x * 0.5;
+                let y = (y + 0.5) * spacing_y - settings.size.y * 0.5;
 
                 ParticleInstance {
                     position: Vec2::new(x, y),
                     predicted_position: Vec2::new(x, y),
-                    ..Default::default()
+                    velocity: Vec2::ZERO,
+                    density: 0.0,
+                    grid: 0,
                 }
 
             })
@@ -327,7 +334,7 @@ impl FluidSimulation {
 
 
 
-        let num_pairs = particle_count.next_power_of_two() / 2;
+        let num_pairs = settings.particle_count.next_power_of_two() / 2;
         let num_stages = (num_pairs * 2).ilog2();
         let sort_dispatch_count = (num_pairs as u32).div_ceil(128);
 
@@ -345,7 +352,7 @@ impl FluidSimulation {
                     group_width,
                     group_height,
                     step_index,
-                    num_values: particle_count,
+                    num_values: settings.particle_count,
                     pad: [0; _],
                 };
 
@@ -493,9 +500,9 @@ impl FluidSimulation {
             grid_h: grid_h as u32,
             texture_size: self.settings.texture_size.as_vec2(),
             show_force_field: if self.show_force_field { 1 } else { 0 },
+            velocity_scale: settings.velocity_scale,
+            velocity_log_factor: settings.velocity_log_factor,
             _pad0: 0,
-            _pad1: 0,
-            _pad2: 0,
         };
 
         self.simulation_uniform.update(queue, &uniform);

@@ -437,12 +437,14 @@ impl Renderer {
             rest_density: 0.0,
             damping_factor: 0.1,
             viscosity_coefficient: 25.0,
-            surface_tension_treshold: 0.1,
-            surface_tension_coefficient: 35.0,
+            surface_tension_treshold: 1.0,
+            surface_tension_coefficient: 0.0,
             mouse_force_radius: 5.0,
             mouse_force_power: 150.0,
             mouse_pos: Vec2::ZERO,
             mouse_state: 0,
+            velocity_scale: 0.0055,
+            velocity_log_factor: 5.0,
         };
 
 
@@ -842,6 +844,24 @@ impl Renderer {
                                 .speed(0.025),
                         );
                     });
+
+                    ui.horizontal(|ui| {
+                        ui.label("velocity scale");
+                        ui.add(
+                            egui::widgets::DragValue::new(&mut self.tick_settings.velocity_scale)
+                                .range(0.0..=f32::MAX)
+                                .speed(0.0001),
+                        );
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("velocity log factor");
+                        ui.add(
+                            egui::widgets::DragValue::new(&mut self.tick_settings.velocity_log_factor)
+                                .range(0.001..=100.0)
+                                .speed(0.05),
+                        );
+                    });
+
                     ui.checkbox(&mut self.simulation.show_force_field, "show force field");
                 });
 

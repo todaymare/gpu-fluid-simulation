@@ -76,10 +76,9 @@ fn fs_main(input: Fragment) -> @location(0) vec4<f32> {
 
 
     // Normalize / scale velocity factor for color mapping
-    velocity_factor = velocity_factor * 0.0055;
+    velocity_factor = velocity_factor * u.velocity_scale;
 
-    let log_factor = 5.0; 
-    velocity_factor = log(1.0 + log_factor * velocity_factor) / log(1.0 + log_factor);
+    velocity_factor = log(1.0 + u.velocity_log_factor * velocity_factor) / log(1.0 + u.velocity_log_factor);
     velocity_factor = clamp(velocity_factor, 0.0, 1.0);
 
     // Fluid interior

@@ -126,20 +126,22 @@ impl ApplicationHandler for EngineLauncher {
         let window = event_loop.create_window(Window::default_attributes().with_inner_size(LogicalSize::new(960, 540))).unwrap();
 
         let sim_settings = SimulationSettings {
-            particle_count: 100_000,
+            particle_count: 10_000,
             particle_spacing: 0.1,
-            smoothing_radius: 0.3,
+            smoothing_radius: 1.0,
             size: Vec2::new(53.0, 30.0),
             texture_size: OBJECT_RENDER_TEXTURE_DIMS,
 
         };
 
         let mut renderer = pollster::block_on(Renderer::new(window, sim_settings));
-        renderer.tick_settings.delta = 1.0 / 480.0;
-        renderer.tick_settings.pressure_constant = 500.0;
-        renderer.tick_settings.rest_density = 0.0;
+        renderer.tick_settings.delta = 1.0 / 240.0;
+        renderer.tick_settings.pressure_constant = 200.0;
+        renderer.tick_settings.rest_density = 6.4;
         renderer.tick_settings.damping_factor = 0.7;
-        renderer.tick_settings.viscosity_coefficient = 250.0;
+        renderer.tick_settings.viscosity_coefficient = 100.0;
+        renderer.tick_settings.velocity_scale = 0.0055;
+        renderer.tick_settings.velocity_log_factor = 5.0;
 
         self.engine = Some(Engine {
             renderer,

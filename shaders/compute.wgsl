@@ -104,12 +104,6 @@ fn move_particle(
     }
 
 
-
-    if (!all(particle.velocity == particle.velocity)) {
-        // reset to something sane so it can recover
-        particle.velocity = vec2(0.0, 0.0);
-    }
-
     let max_speed = 50.0;
     let speed = length(particle.velocity);
     if (speed > max_speed) {
@@ -161,7 +155,6 @@ fn move_particle(
         particle.velocity.x *= -1.0 * u.damping_factor;
     }
 
-
     if abs(particle.position.y) > bounds_size.y {
         particle.position.y = bounds_size.y * sign(particle.position.y);
         particle.velocity.y *= -1.0 * u.damping_factor;
@@ -182,12 +175,6 @@ fn calculate_pressure_force(particle_id: u32) -> vec2<f32> {
 
     var pressure_force = vec2<f32>(0.0);
 
-    var inc = 1u;
-    inc += u32(step(150.0, particle.density) * 4);
-    inc += u32(step(200.0, particle.density) * 8);
-
-
-
     // loop neighbours
     let cell = vec2<i32>(xy_of_point(position));
     for (var offset_y = -1; offset_y <= 1; offset_y = offset_y + 1) {
@@ -207,12 +194,7 @@ fn calculate_pressure_force(particle_id: u32) -> vec2<f32> {
                 if neighbour.grid != id { break; }
 
                 let i = start_index;
-                start_index += inc;
-
-                // func start
-                
-
-                if i == particle_id { continue; }
+                start_index += 1u;
 
                 let neighbour_pos = neighbour.predicted_position;
 
@@ -262,13 +244,6 @@ fn calculate_viscosity_force(particle_id: u32) -> vec2<f32> {
 
     var pressure_force = vec2<f32>(0.0);
 
-    var inc = 1u;
-
-    inc += u32(step(150.0, particle.density) * 4);
-    inc += u32(step(200.0, particle.density) * 8);
-
-
-
     // loop neighbours
     let cell = vec2<i32>(xy_of_point(position));
     for (var offset_y = -1; offset_y <= 1; offset_y = offset_y + 1) {
@@ -289,7 +264,7 @@ fn calculate_viscosity_force(particle_id: u32) -> vec2<f32> {
                 if neighbour.grid != id { break; }
 
                 let i = start_index;
-                start_index += inc;
+                start_index += 1u;
 
                 // func start
 
