@@ -7,6 +7,9 @@ mod egui_tools;
 mod input;
 mod platform;
 
+#[cfg(target_family = "wasm")]
+mod load_image;
+
 use std::pin::Pin;
 
 use glam::{Vec2, Vec4};
@@ -34,6 +37,19 @@ pub fn wasm_main() {
     web_sys::console::log_1(&"[molasses] wasm_main: start".into());
 
     run();
+}
+
+
+fn set_mouse_world_pos(renderer: &mut crate::renderer::Renderer, x: f64, y: f64) {
+    let position = Vec2::new(x as f32, y as f32);
+    let window_size = renderer.window.inner_size();
+    let window_size = Vec2::new(window_size.width as f32, window_size.height as f32);
+    let ndc = (position / window_size) * 2.0 - 1.0;
+    let clip_pos = Vec4::new(ndc.x, -ndc.y, 0.0, 1.0);
+    let inv_proj = renderer.projection.inverse();
+    let world_pos = inv_proj * clip_pos;
+    let world_pos = world_pos.truncate() / world_pos.w;
+    renderer.tick_settings.mouse_pos = world_pos.truncate();
 }
 
 
@@ -78,7 +94,7 @@ impl Engine {
         renderer.tick_settings.viscosity_coefficient = 200.0;
         renderer.tick_settings.surface_tension_treshold = 2.0;
         renderer.tick_settings.surface_tension_coefficient = 0.2;
-        renderer.tick_settings.mouse_force_radius = 3.0;
+        renderer.tick_settings.mouse_force_radius = 5.0;
         renderer.tick_settings.mouse_force_power = 2.0;
 
         Self {
@@ -151,6 +167,9 @@ impl Engine {
             self.objects.load_image_pending = false;
             self.renderer.load_image(&mut self.objects);
         }
+
+        #[cfg(target_family = "wasm")]
+        self.renderer.poll_loaded_image(&mut self.objects);
 
         self.renderer.window.request_redraw();
 
@@ -386,21 +405,22 @@ impl ApplicationHandler for App {
 
 
             WindowEvent::CursorMoved { device_id: _, position } => {
+                set_mouse_world_pos(&mut engine.renderer, position.x, position.y);
+            }
+
+
+            WindowEvent::Touch(touch) => {
                 let renderer = &mut engine.renderer;
-                let position = Vec2::new(position.x as f32, position.y as f32);
-
-
-                let window_size = renderer.window.inner_size();
-                let window_size = Vec2::new(window_size.width as f32, window_size.height as f32);
-                let ndc = (position / window_size) * 2.0 - 1.0;
-                let clip_pos = Vec4::new(ndc.x, -ndc.y, 0.0, 1.0);
-                let inv_proj = renderer.projection.inverse();
-
-                let world_pos = inv_proj * clip_pos;
-                let world_pos = world_pos.truncate() / world_pos.w;
-                let world_pos = world_pos.truncate();
-
-                renderer.tick_settings.mouse_pos = world_pos;
+                use winit::event::TouchPhase::*;
+                match touch.phase {
+                    Started | Moved => {
+                        set_mouse_world_pos(renderer, touch.location.x, touch.location.y);
+                        renderer.tick_settings.mouse_state = -1;
+                    },
+                    Ended | Cancelled => {
+                        renderer.tick_settings.mouse_state = 0;
+                    },
+                }
             }
 
 

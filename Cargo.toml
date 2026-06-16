@@ -34,7 +34,7 @@ js-sys = "*"
 console_error_panic_hook = "*"
 console_log = "1"
 log = "*"
-web-sys = { version = "*", features = ["console", "HtmlCanvasElement", "Storage", "Window"] }
+web-sys = { version = "*", features = ["console", "HtmlCanvasElement", "Storage", "Window", "Blob", "File", "FileList", "FileReader", "HtmlInputElement", "Event", "EventTarget", "Document", "Element", "HtmlElement", "Url", "BlobPropertyBag"] }
 instant = { version = "0.1", features = ["wasm-bindgen"] }
 include_dir = "0.7"
 hex = "*"

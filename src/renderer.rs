@@ -491,7 +491,7 @@ impl Renderer {
             render_smoothing: 0.06,
             render_base_color: Vec4::new(0.4, 0.7, 1.0, 1.0),
             render_lerp_color: Vec4::new(1.0, 1.0, 1.0, 1.0),
-            max_render_density: 30.0,
+            max_render_density: 50.0,
             render_saturation_color: Vec4::new(1.0, 1.0, 1.0, 1.0),
             render_edge_color: Vec4::new(1.0, 1.0, 1.0, 1.0),
             edge_distance: 0.4,
@@ -764,23 +764,44 @@ impl Renderer {
 
             let Ok(bytes) = std::fs::read(&path) else { return };
             let Ok(img) = image::load_from_memory(&bytes) else { return };
-            let rgba = img.to_rgba8();
-            let (w, h) = (rgba.width() as f32, rgba.height() as f32);
-            if w == 0.0 || h == 0.0 { return; }
-
-            let texture = self.atlas_manager.register_image(&self.device, &self.queue, &rgba);
-
-            // Fit into a 4x4 world-unit box, preserving aspect ratio.
-            let (scale_x, scale_y) = if w >= h { (4.0, 4.0 * h / w) } else { (4.0 * w / h, 4.0) };
-
-            store.quads.push(Quad {
-                pos: Vec3::ZERO,
-                scale: Vec2::new(scale_x, scale_y),
-                rot: 0.0,
-                colour: Vec4::ONE,
-                texture,
-            });
+            self.push_image_quad(store, img);
         }
+
+        #[cfg(target_family = "wasm")]
+        {
+            // On the web, the file is selected asynchronously via a hidden
+            // <input type="file">. The picker is triggered by the caller;
+            // we just kick off the dialog here.
+            crate::load_image::pick();
+        }
+    }
+
+
+    #[cfg(target_family = "wasm")]
+    pub fn poll_loaded_image(&mut self, store: &mut ObjectStore) {
+        let Some(bytes) = crate::load_image::take_pending() else { return };
+        let Ok(img) = image::load_from_memory(&bytes) else { return };
+        self.push_image_quad(store, img);
+    }
+
+
+    fn push_image_quad(&mut self, store: &mut ObjectStore, img: image::DynamicImage) {
+        let rgba = img.to_rgba8();
+        let (w, h) = (rgba.width() as f32, rgba.height() as f32);
+        if w == 0.0 || h == 0.0 { return; }
+
+        let texture = self.atlas_manager.register_image(&self.device, &self.queue, &rgba);
+
+        // Fit into a 4x4 world-unit box, preserving aspect ratio.
+        let (scale_x, scale_y) = if w >= h { (4.0, 4.0 * h / w) } else { (4.0 * w / h, 4.0) };
+
+        store.quads.push(Quad {
+            pos: Vec3::ZERO,
+            scale: Vec2::new(scale_x, scale_y),
+            rot: 0.0,
+            colour: Vec4::ONE,
+            texture,
+        });
     }
 
 
