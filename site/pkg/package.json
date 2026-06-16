@@ -1,0 +1,14 @@
+{
+  "name": "molasses",
+  "version": "0.1.0",
+  "files": [
+    "molasses_bg.wasm",
+    "molasses.js",
+    "molasses.d.ts"
+  ],
+  "module": "molasses.js",
+  "types": "molasses.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}
