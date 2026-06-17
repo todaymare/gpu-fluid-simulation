@@ -59,9 +59,22 @@ pub async fn benchmark_gpu(device: &wgpu::Device, queue: &wgpu::Queue) -> Option
         }],
     });
 
+    // Fire-and-forget warmup dispatch — the first submit on web can hit
+    // a frame boundary, so we absorb that one-time cost here.
+    {
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        {
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
+            cpass.set_pipeline(&pipeline);
+            cpass.set_bind_group(0, &bind_group, &[]);
+            cpass.dispatch_workgroups(1, 1, 1);
+        }
+        queue.submit(Some(encoder.finish()));
+    }
+
     let start = platform::Instant::now();
 
-    // Timed dispatch (includes first-run shader compilation + compute + copy).
+    // Timed dispatch (compute + buffer copy).
     {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         {
@@ -103,14 +116,24 @@ pub async fn benchmark_gpu(device: &wgpu::Device, queue: &wgpu::Queue) -> Option
     }
 
     #[cfg(target_family = "wasm")]
-    loop {
-        let _ = device.poll(wgpu::PollType::Poll);
-        if receiver.try_recv().is_ok() {
-            break;
+    {
+        for _ in 0..8 {
+            let _ = device.poll(wgpu::PollType::Poll);
+            if receiver.try_recv().is_ok() {
+                break;
+            }
         }
-        wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&wasm_bindgen::JsValue::NULL))
-            .await
-            .unwrap();
+        if receiver.try_recv().is_err() {
+            wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&wasm_bindgen::JsValue::NULL))
+                .await
+                .unwrap();
+        }
+        loop {
+            let _ = device.poll(wgpu::PollType::Poll);
+            if receiver.try_recv().is_ok() {
+                break;
+            }
+        }
     }
 
     staging.unmap();

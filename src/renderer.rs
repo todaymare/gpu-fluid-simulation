@@ -880,7 +880,6 @@ impl Renderer {
                 .resizable(true)
                 .vscroll(true)
                 .default_open(false)
-                .auto_sized()
                 .show(self.egui.context(), |ui| {
                     let presets: &[(&str, u32, f32, f32, f32)] = &[
                         ("2k (mobile)",  2_000, 0.1, 1.581, 1.5),
@@ -915,7 +914,7 @@ impl Renderer {
                         ui.label("particle count");
                         ui.add(
                             egui::widgets::DragValue::new(&mut self.sim_settings.particle_count)
-                                .range(0..=u32::MAX)
+                                .range(2..=u32::MAX)
                                 .speed(10),
                         );
                     });
