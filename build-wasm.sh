@@ -17,5 +17,8 @@ cp pkg/package.json    site/pkg/
 # Keep the `files` list in package.json consistent with the renamed wasm.
 sed -i '' 's/app_bg.wasm/app.wasm/g' site/pkg/package.json
 
+WASM_SIZE=$(wc -c < site/pkg/app.wasm | tr -d '[:space:]')
+echo "{\"wasm_size\": $WASM_SIZE}" > site/pkg/metadata.json
+
 echo "==> Done. Serve the site/ directory:"
 echo "       python3 -m http.server --directory site 8000"

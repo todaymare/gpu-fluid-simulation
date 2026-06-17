@@ -130,6 +130,12 @@ function __wbg_get_imports() {
             const ret = arg0.catch(arg1);
             return ret;
         },
+        __wbg_clearBuffer_1b615b9983095c00: function(arg0, arg1, arg2, arg3) {
+            arg0.clearBuffer(arg1, arg2, arg3);
+        },
+        __wbg_clearBuffer_cfdf6365f499d5bd: function(arg0, arg1, arg2) {
+            arg0.clearBuffer(arg1, arg2);
+        },
         __wbg_clearTimeout_1a62f3563b1611b3: function(arg0, arg1) {
             arg0.clearTimeout(arg1);
         },

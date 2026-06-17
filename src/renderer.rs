@@ -249,6 +249,16 @@ impl Renderer {
             } else {
                 20_000
             };
+            #[cfg(target_arch = "wasm32")]
+            {
+                settings.particle_count = if ms > 25.0 {
+                    2_000
+                } else if ms > 12.0 {
+                    10_000
+                } else {
+                    20_000
+                };
+            }
             settings.smoothing_radius = 0.5 * (20_000.0 / settings.particle_count as f32).sqrt();
             #[cfg(target_arch = "wasm32")]
             web_sys::console::log_1(&format!("[molasses] gpu benchmark: {ms:.2}ms → {} particles, h={:.3}", settings.particle_count, settings.smoothing_radius).into());

@@ -72,6 +72,27 @@ pub async fn benchmark_gpu(device: &wgpu::Device, queue: &wgpu::Queue) -> Option
         queue.submit(Some(encoder.finish()));
     }
 
+    // Wait for the warmup to complete so the timed dispatch below
+    // measures real GPU speed, not first-submit overhead.
+    {
+        let temp = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("gpu_bench_warmup"),
+            size: 4,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let (s, r) = std::sync::mpsc::channel();
+        temp.slice(..).map_async(wgpu::MapMode::Read, move |_| {
+            let _ = s.send(());
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        encoder.clear_buffer(&temp, 0, None);
+        queue.submit(Some(encoder.finish()));
+
+        poll_until_mapped(device, &r).await;
+        temp.unmap();
+    }
+
     let start = platform::Instant::now();
 
     // Timed dispatch (compute + buffer copy).
@@ -93,50 +114,44 @@ pub async fn benchmark_gpu(device: &wgpu::Device, queue: &wgpu::Queue) -> Option
         mapped_at_creation: false,
     });
 
-    {
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-        encoder.copy_buffer_to_buffer(&buffer, 0, &staging, 0, buffer.size());
-        queue.submit(Some(encoder.finish()));
-    }
-
     let (sender, receiver) = std::sync::mpsc::channel();
     let slice = staging.slice(..);
     slice.map_async(wgpu::MapMode::Read, move |_| {
         let _ = sender.send(());
     });
 
-    // Poll until the map callback fires.
-    #[cfg(not(target_family = "wasm"))]
-    loop {
-        let _ = device.poll(wgpu::PollType::Poll);
-        if receiver.try_recv().is_ok() {
-            break;
-        }
-        std::hint::spin_loop();
+    {
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        encoder.copy_buffer_to_buffer(&buffer, 0, &staging, 0, buffer.size());
+        queue.submit(Some(encoder.finish()));
     }
 
-    #[cfg(target_family = "wasm")]
-    {
-        for _ in 0..8 {
-            let _ = device.poll(wgpu::PollType::Poll);
-            if receiver.try_recv().is_ok() {
-                break;
-            }
-        }
-        if receiver.try_recv().is_err() {
-            wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&wasm_bindgen::JsValue::NULL))
-                .await
-                .unwrap();
-        }
-        loop {
-            let _ = device.poll(wgpu::PollType::Poll);
-            if receiver.try_recv().is_ok() {
-                break;
-            }
-        }
-    }
+    poll_until_mapped(device, &receiver).await;
 
     staging.unmap();
 
     Some(start.elapsed().as_secs_f64() * 1000.0)
+}
+
+
+async fn poll_until_mapped(device: &wgpu::Device, receiver: &std::sync::mpsc::Receiver<()>) {
+    #[cfg(not(target_family = "wasm"))]
+    loop {
+        if receiver.try_recv().is_ok() {
+            return;
+        }
+        let _ = device.poll(wgpu::PollType::Poll);
+        std::hint::spin_loop();
+    }
+
+    #[cfg(target_family = "wasm")]
+    loop {
+        if receiver.try_recv().is_ok() {
+            return;
+        }
+        let _ = device.poll(wgpu::PollType::Poll);
+        wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&wasm_bindgen::JsValue::NULL))
+            .await
+            .unwrap();
+    }
 }
