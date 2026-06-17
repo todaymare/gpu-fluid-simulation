@@ -6,6 +6,7 @@ mod shader;
 mod egui_tools;
 mod input;
 mod platform;
+mod benchmark;
 
 #[cfg(target_family = "wasm")]
 mod load_image;
@@ -89,7 +90,6 @@ impl Engine {
         renderer.tick_settings.delta = 1.0 / 120.0;
         renderer.tick_settings.gravity = Vec2::new(0.0, 15.0);
         renderer.tick_settings.pressure_constant = 200.0;
-        renderer.tick_settings.rest_density = 15.0;
         renderer.tick_settings.damping_factor = 0.2;
         renderer.tick_settings.viscosity_coefficient = 200.0;
         renderer.tick_settings.surface_tension_treshold = 2.0;

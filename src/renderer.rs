@@ -161,7 +161,7 @@ struct ParticleVertex {
 
 
 impl Renderer {
-    pub async fn new(window: &'static Window, settings: SimulationSettings) -> Self {
+    pub async fn new(window: &'static Window, mut settings: SimulationSettings) -> Self {
         let size = window.inner_size();
         // wgpu refuses a 0x0 surface texture. If the window is briefly 0
         // (some web backends report the canvas's internal buffer before
@@ -239,6 +239,25 @@ impl Renderer {
         };
 
         surface.configure(&device, &config);
+
+        let gpu_ms = crate::benchmark::benchmark_gpu(&device, &queue).await;
+        if let Some(ms) = gpu_ms {
+            settings.particle_count = if ms > 10.0 {
+                2_000
+            } else if ms > 3.0 {
+                10_000
+            } else {
+                20_000
+            };
+            settings.smoothing_radius = 0.5 * (20_000.0 / settings.particle_count as f32).sqrt();
+            #[cfg(target_arch = "wasm32")]
+            web_sys::console::log_1(&format!("[molasses] gpu benchmark: {ms:.2}ms → {} particles, h={:.3}", settings.particle_count, settings.smoothing_radius).into());
+        } else {
+            #[cfg(target_arch = "wasm32")]
+            web_sys::console::log_1(&"[molasses] gpu benchmark skipped (shader not found)".into());
+        }
+
+        let rest_density_scale = settings.particle_count as f32 / 20_000.0;
 
         let simulation = FluidSimulation::new(&device, settings);
 
@@ -472,7 +491,7 @@ impl Renderer {
             gravity: Vec2::ZERO,
             mass: 1.0,
             pressure_constant: 50.0,
-            rest_density: 0.0,
+            rest_density: 15.0 * rest_density_scale,
             damping_factor: 0.1,
             viscosity_coefficient: 25.0,
             surface_tension_treshold: 1.0,
@@ -488,7 +507,7 @@ impl Renderer {
             density_scale: 0.01,
             density_log_factor: 5.0,
             show_force_field: false,
-            render_smoothing: 0.06,
+            render_smoothing: 0.06 * 20_000.0 / settings.particle_count as f32,
             render_base_color: Vec4::new(0.4, 0.7, 1.0, 1.0),
             render_lerp_color: Vec4::new(1.0, 1.0, 1.0, 1.0),
             max_render_density: 50.0,
@@ -863,6 +882,35 @@ impl Renderer {
                 .default_open(false)
                 .auto_sized()
                 .show(self.egui.context(), |ui| {
+                    let presets: &[(&str, u32, f32, f32, f32)] = &[
+                        ("2k (mobile)",  2_000, 0.1, 1.581, 1.5),
+                        ("5k (low)",     5_000, 0.1, 1.0,   3.75),
+                        ("10k (medium)", 10_000, 0.1, 0.707, 7.5),
+                        ("20k (high)",   20_000, 0.1, 0.5,   15.0),
+                    ];
+
+                    egui::ComboBox::from_label("preset")
+                        .selected_text({
+                            let pc = self.sim_settings.particle_count;
+                            presets.iter().find(|(_, c, _, _, _)| *c == pc)
+                                .map(|(l, ..)| *l)
+                                .unwrap_or("custom")
+                        })
+                        .show_ui(ui, |ui| {
+                            for &(label, count, spacing, h, rest) in presets {
+                                if ui.selectable_label(false, label).clicked() {
+                                    self.sim_settings.particle_count = count;
+                                    self.sim_settings.particle_spacing = spacing;
+                                    self.sim_settings.smoothing_radius = h;
+                                    self.tick_settings.rest_density = rest;
+                                    self.render_settings.render_smoothing = 0.06 * 20_000.0 / count as f32;
+                                    restart_sim = true;
+                                }
+                            }
+                        });
+
+                    ui.separator();
+
                     ui.horizontal(|ui| {
                         ui.label("particle count");
                         ui.add(

@@ -178,7 +178,7 @@
             try {
                 // Fetch wasm with progress tracking
                 setStatus('Fetching...');
-                const response = await fetch('./pkg/app_bg.wasm');
+                const response = await fetch('./pkg/app.wasm');
 
                 if (!response.ok) {
                     throw new Error(`HTTP ${response.status}: ${response.statusText}`);
