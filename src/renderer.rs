@@ -881,28 +881,28 @@ impl Renderer {
                 .vscroll(true)
                 .default_open(false)
                 .show(self.egui.context(), |ui| {
-                    let presets: &[(&str, u32, f32, f32, f32)] = &[
-                        ("2k (mobile)",  2_000, 0.1, 1.581, 1.5),
-                        ("5k (low)",     5_000, 0.1, 1.0,   3.75),
-                        ("10k (medium)", 10_000, 0.1, 0.707, 7.5),
-                        ("20k (high)",   20_000, 0.1, 0.5,   15.0),
+                    let presets: &[(&str, u32, f32, f32, f32, f32)] = &[
+                        ("2k (mobile)",  2_000, 0.1, 1.581, 1.5, 0.38),
+                        ("5k (low)",     5_000, 0.1, 1.0,   3.75, 0.16),
+                        ("10k (medium)", 10_000, 0.1, 0.707, 7.5, 0.08),
+                        ("20k (high)",   20_000, 0.1, 0.5,   15.0, 0.05),
                     ];
 
                     egui::ComboBox::from_label("preset")
                         .selected_text({
                             let pc = self.sim_settings.particle_count;
-                            presets.iter().find(|(_, c, _, _, _)| *c == pc)
+                            presets.iter().find(|(_, c, _, _, _, _)| *c == pc)
                                 .map(|(l, ..)| *l)
                                 .unwrap_or("custom")
                         })
                         .show_ui(ui, |ui| {
-                            for &(label, count, spacing, h, rest) in presets {
+                            for &(label, count, spacing, h, rest, render_radius) in presets {
                                 if ui.selectable_label(false, label).clicked() {
                                     self.sim_settings.particle_count = count;
                                     self.sim_settings.particle_spacing = spacing;
                                     self.sim_settings.smoothing_radius = h;
                                     self.tick_settings.rest_density = rest;
-                                    self.render_settings.render_smoothing = 0.06 * 20_000.0 / count as f32;
+                                    self.render_settings.render_smoothing = render_radius;
                                     restart_sim = true;
                                 }
                             }

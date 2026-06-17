@@ -87,7 +87,7 @@ impl Engine {
         let mut renderer = Renderer::new(window, sim_settings).await;
         #[cfg(target_family = "wasm")]
         web_sys::console::log_1(&"[molasses] Engine::new: Renderer::new complete".into());
-        renderer.tick_settings.delta = 1.0 / 120.0;
+        renderer.tick_settings.delta = 1.0 / 160.0;
         renderer.tick_settings.gravity = Vec2::new(0.0, 15.0);
         renderer.tick_settings.pressure_constant = 200.0;
         renderer.tick_settings.damping_factor = 0.2;
